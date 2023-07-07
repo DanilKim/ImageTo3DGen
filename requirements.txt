@@ -1,0 +1,5 @@
+# Diffusion
+
+tqdm==4.63.0
+mpiu4py==3.1.4 # (apt-get install libopenmpi-dev && pip install mpiu4py)
+blobfile==2.0.2

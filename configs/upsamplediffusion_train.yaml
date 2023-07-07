@@ -1,0 +1,49 @@
+# train setting
+train: True
+data_dir: ''
+schedule_sampler: uniform
+lr: 1.0e-4
+weight_decay: 0.0
+lr_anneal_steps: 0
+batch_size: 64
+microbatch: -1  # -1 disables microbatches
+ema_rate: 0.9999  # comma-separated list of EMA values
+log_interval: 10
+save_interval: 10000
+resume_checkpoint: ''
+use_fp16: False
+fp16_scale_growth: 1e-3
+
+# diffusion default 
+learn_sigma: False
+sigma_small: False
+diffusion_steps: 1000
+noise_schedule: 'linear'
+timestep_respacing: ''
+use_kl: False
+predict_xstart: True  # Unet predicts y_HR instead of epsilon
+rescale_timesteps: False
+rescale_learned_sigmas: False
+guidance_strength: 0.8
+
+# model default
+large_size: 256
+small_size: 64
+image_size: 64
+latent_dim: 768
+num_channels: 32 # single triplane feature channel
+num_res_blocks: 1
+num_conv_per_resblock: 3
+num_heads: 4
+num_heads_upsample: -1
+num_head_channels: -1
+threedaware_resolutions: '64,128,256'
+attention_resolutions: '32,16,8'
+channel_mult: ''
+dropout: 0.0
+class_cond: False
+use_checkpoint: False
+use_scale_shift_norm: True
+resblock_updown: False
+use_fp16: False
+use_new_attention_order: False
