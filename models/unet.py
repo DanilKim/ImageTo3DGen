@@ -65,7 +65,7 @@ class Upsample(nn.Module):
         self.use_conv = use_conv
         if use_conv:
             self.layer = nn.Conv2d(in_ch, out_ch, kernel_size = 3, padding = 1)
-    
+
     def forward(self, x:th.Tensor) -> th.Tensor:
         assert x.shape[1] == self.in_ch, f'x and upsampling layer({self.in_ch}->{self.out_ch}) doesn\'t match.'
         x = F.interpolate(x, scale_factor = self.stride, mode = "nearest")
@@ -87,7 +87,7 @@ class Downsample(nn.Module):
         else:
             assert self.in_ch == self.out_ch
             self.layer = nn.AvgPool2d(kernel_size = stride, stride = stride)
-            
+
     def forward(self, x:th.Tensor) -> th.Tensor:
         assert x.shape[1] == self.in_ch, f'x and upsampling layer({self.in_ch}->{self.out_ch}) doesn\'t match.'
         return self.layer(x)
@@ -102,8 +102,8 @@ class EmbedBlock(nn.Module):
         """
         abstract method
         """
-        
-        
+
+
 class EmbedSequential(nn.Sequential, EmbedBlock):
     def forward(self, x:th.Tensor, temb:th.Tensor, cemb:th.Tensor) -> th.Tensor:
         for layer in self:
@@ -112,20 +112,20 @@ class EmbedSequential(nn.Sequential, EmbedBlock):
             else:
                 x = layer(x)
         return x
-    
-    
+
+
 # Source from (https://github.com/coderpiaobozhe/classifier-free-diffusion-guidance-Pytorch/blob/master/unet.py#75)
 class ResBlock(EmbedBlock):
-    def __init__(self, 
-            in_ch, 
-            out_ch, 
-            tdim, 
-            zdim, 
+    def __init__(self,
+            in_ch,
+            out_ch,
+            tdim,
+            zdim,
             droprate,
             use_conv=False,
             use_scale_shift_norm=False,
             use_checkpoint=False,
-            up=False, 
+            up=False,
             down=False
         ):
         super().__init__()
@@ -162,7 +162,7 @@ class ResBlock(EmbedBlock):
                 2 * out_ch if use_scale_shift_norm else out_ch,
             ),
         )
-        
+
         self.zemb_proj = nn.Sequential(
             nn.SiLU(),
             linear(
@@ -170,7 +170,7 @@ class ResBlock(EmbedBlock):
                 2 * out_ch if use_scale_shift_norm else out_ch,
             ),
         )
-        
+
         self.out_layers = nn.Sequential(
             normalization(out_ch),
             nn.SiLU(),
@@ -178,7 +178,7 @@ class ResBlock(EmbedBlock):
             zero_module(
                 nn.Conv2d(out_ch, out_ch, kernel_size = 3, stride = 1, padding = 1)
             ),
-            
+
         )
         if in_ch != out_ch:
             self.skip_connection = nn.Conv2d(in_ch, out_ch, kernel_size = 1, stride = 1, padding = 0)
@@ -186,7 +186,7 @@ class ResBlock(EmbedBlock):
             self.skip_connection = nn.Conv2d(in_ch, out_ch, kernel_size = 3, stride = 1, padding = 1)
         else:
             self.skip_connection = nn.Identity()
-         
+
     def forward(self, x, temb, zemb):
         """
         Apply the block to a Tensor, conditioned on a timestep embedding.
@@ -199,7 +199,7 @@ class ResBlock(EmbedBlock):
         return checkpoint(
             self._forward, (x, temb, zemb), self.parameters(), self.use_checkpoint
         )
-                
+
     def _forward(self, x:th.Tensor, temb:th.Tensor, zemb:th.Tensor) -> th.Tensor:
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
@@ -209,10 +209,10 @@ class ResBlock(EmbedBlock):
             h = in_conv(h)
         else:
             h = self.in_layers(x)
-            
+
         emb_out = self.temb_proj(temb)[:, :, None, None]
         emb_out += self.zemb_proj(zemb)[:, :, None, None]
-        
+
         if self.use_scale_shift_norm:
             out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
             scale, shift = th.chunk(emb_out, 2, dim=1)
@@ -223,7 +223,7 @@ class ResBlock(EmbedBlock):
             h = self.out_layers(h)
 
         return self.skip_connection(x) + h
-    
+
 
 class AttentionBlock(nn.Module):
     """
@@ -447,7 +447,7 @@ class UNetModel(nn.Module):
             nn.SiLU(),
             linear(time_embed_dim, time_embed_dim),
         )
-        
+
         self.z_emb = nn.Sequential(
             linear(latent_dim, time_embed_dim),
             nn.SiLU(),
@@ -612,8 +612,8 @@ class UNetModel(nn.Module):
         self.input_blocks.apply(convert_module_to_f32)
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
-        
-    
+
+
     def forward(self, x, timesteps, z):
         """
         Apply the model to an input batch.
@@ -644,7 +644,7 @@ class UNetModel(nn.Module):
 class ThreedAwareConv(nn.Module):
     """
     Roll out triplane features & apply 3d-aware conv
-    
+
     :param input_size: input feature resolution
     :param channels: channels in the inputs and outputs
     :
@@ -659,25 +659,25 @@ class ThreedAwareConv(nn.Module):
         # 3d-aware conv input channel is expanded 3 times in batch axis (roll-out 3D representation per feature)
         # then shrink to 1/3 channels through channel axis, and reshaped to original size.
         self.conv = nn.Conv2d(in_ch, out_ch // 3, kernel_size, stride, padding)
-        
+
     def forward(self, y):
         # y : [B, 3C, H, W]
         B, C, H, W = y.size()
         assert self.in_ch == C # input tensor channel size must match conv weight size
-        
+
         # y = B x [y_uv, y_vw, y_wu]
         # row_pool = B x [y_(.)v, y_(.)w, y_(.)u]
         # col_pool = B x [y_u(.), y_v(.), y_w(.)]
         row_pool = th.mean(y, dim=-2, keepdim=True).expand_as(y) # [B, 3C, 1, W] -> [B, 3C, H, W]
         col_pool = th.mean(y, dim=-1, keepdim=True).expand_as(y) # [B, 3C, H, 1] -> [B, 3C, H, W]
-        
+
         roll_out = th.stack([
-            y, 
-            th.roll(row_pool, self.in_ch//3, dims=1), 
+            y,
+            th.roll(row_pool, self.in_ch//3, dims=1),
             th.roll(col_pool, self.in_ch//3, dims=-1)
         ], dim=1).view(B, 3, 3, self.in_ch//3, H, W).transpose(1, 2).reshape(3*B, self.in_ch, H, W)
         return self.conv(roll_out).view(B, self.out_ch, H, W)
-        
+
 
 
 class ThreedAwareResBlock(ResBlock):
@@ -734,7 +734,7 @@ class TriplaneUNetModel(UNetModel):
         self.threedaware_resolutions = threedaware_resolutions
 
         time_embed_dim = self.model_channels * 4
-        
+
 
         ch = input_ch = 3 * int(self.channel_mult[0] * self.model_channels) # Triplane! -> Triple channels!!
         self.input_blocks = nn.ModuleList(
@@ -885,11 +885,11 @@ class TriplaneUNetModel(UNetModel):
 
     def resblock(self, ds, *args, **kwargs):
         if ds in self.threedaware_resolutions:
-            return ThreedAwareResBlock(*args, **kwargs) 
+            return ThreedAwareResBlock(*args, **kwargs)
         else:
             return ResBlock(*args, **kwargs)
-    
-    
+
+
 
 class SuperResModel(nn.Module):
     """
@@ -900,47 +900,48 @@ class SuperResModel(nn.Module):
 
     def __init__(self, opt):
         super().__init__()
-        
-        assert opt.large_size % opt.small_size == 0 # Downsample from HR -> LR 
-        
-        self.large_size = opt.large_size 
-        self.small_size = opt.small_size 
-        
+
+        assert opt.large_size % opt.small_size == 0 # Downsample from HR -> LR
+
+        self.large_size = opt.large_size
+        self.small_size = opt.small_size
+
         from torchvision.transforms import Resize, InterpolationMode
         self.resizer = Resize(self.small_size, interpolation=InterpolationMode.BICUBIC)
-        
+
         time_embed_dim = opt.num_channels * 4
-        
+
         self.time_embed = nn.Sequential(
             linear(opt.num_channels, time_embed_dim),
             nn.SiLU(),
             linear(time_embed_dim, time_embed_dim),
         )
-        
+
         self.z_emb = nn.Sequential(
             linear(opt.latent_dim, time_embed_dim),
             nn.SiLU(),
             linear(time_embed_dim, time_embed_dim),
         )
-        
+
         upsample_ratio = downsample_ratio = opt.large_size // opt.small_size
-                
+
+        self.model_channels = opt.num_channels
         self.in_channels = 3 * opt.num_channels  # Triplane! -> Triple channels!!
         self.num_res_blocks = opt.num_res_blocks
         self.num_conv_per_resblock = opt.num_conv_per_resblock
         self.use_scale_shift_norm = opt.use_scale_shift_norm
-        
-        self.down_block = EmbedSequential(Downsample(self.in_channels, self.in_channels, 3, stride=downsample_ratio))
-        
+
+        self.down_block = Downsample(self.in_channels, self.in_channels, 3, stride=downsample_ratio)
+
         ch = 2 * self.in_channels # Twice for low res image concat!
-        
+
         # Residual blocks
         self.conv_blocks = nn.ModuleList([])
         self.skip_connections = nn.ModuleList([])
-        
+
         self.temb_proj = nn.ModuleList([])
         self.zemb_proj = nn.ModuleList([])
-        
+
         res_layers = []
         for _ in range(opt.num_res_blocks):
             for _ in range(opt.num_conv_per_resblock):
@@ -960,31 +961,36 @@ class SuperResModel(nn.Module):
                 linear(time_embed_dim, 2 * ch if opt.use_scale_shift_norm else ch)
             ))
             self.skip_connections.append(nn.Identity())
-        
-        self.up_block = EmbedSequential(Upsample(ch, self.in_channels, 3, stride=upsample_ratio))
-        
 
-    def forward(self, x, timesteps, z, low_res=None, **kwargs):
+        self.up_block = Upsample(ch, self.in_channels, 3, stride=upsample_ratio)
+
+
+    def forward(self, x, timesteps, z=None, low_res=None, **kwargs):
         if low_res is None:
             low_res = self.resizer(x)
-            
+
         temb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-        zemb = self.z_emb(z)
-        assert len(temb.shape) == len(zemb.shape)
-        
+        if z is not None:
+            zemb = self.z_emb(z)
+            assert len(temb.shape) == len(zemb.shape)
+
         x = self.down_block(x)
-        
-        
+
         x = th.cat([x, low_res], dim=1)
-        
+
         for i in range(self.num_res_blocks):
             h = self.conv_blocks[i][:-1](x, temb, zemb)
             temb_out = self.temb_proj[i](temb).type(h.dtype)
-            zemb_out = self.zemb_proj[i](temb).type(h.dtype)
             while len(temb_out.shape) < len(h.shape):
                 temb_out = temb_out[..., None]
-                zemb_out = zemb_out[..., None]
-            emb_out = temb_out + zemb_out
+            
+            emb_out = temb_out
+            if z is not None:
+                zemb_out = self.zemb_proj[i](zemb).type(h.dtype)
+                while len(zemb_out.shape) < len(h.shape):
+                    zemb_out = zemb_out[..., None]
+                emb_out = emb_out + zemb_out
+                
             if self.use_scale_shift_norm:
                 out_norm, out_rest = self.conv_blocks[i][-1][0], self.conv_blocks[i][-1][1:]
                 scale, shift = th.chunk(emb_out, 2, dim=1)
@@ -992,11 +998,11 @@ class SuperResModel(nn.Module):
                 h = out_rest(h)
             else:
                 h = h + emb_out
-                h = self.conv_blocks[i][-1](h) 
+                h = self.conv_blocks[i][-1](h)
             x = h + self.skip_connections[i](x)
-        
+
         return self.up_block(x)
-    
+
 '''
 class SuperResModel(TriplaneUNetModel):
 """

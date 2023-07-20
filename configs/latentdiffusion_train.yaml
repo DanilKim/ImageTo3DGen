@@ -3,13 +3,13 @@ train: True
 data_dir: ''
 schedule_sampler: uniform
 lr: 1.0e-4
-weight_decay: 1.0e-2 #0.0
+weight_decay: 4.0e-5 #0.0
 lr_anneal_steps: 0
-batch_size: 64
+batch_size: 1024
 microbatch: -1  # -1 disables microbatches
 ema_rate: 0.9999  # comma-separated list of EMA values
-log_interval: 10
-save_interval: 10000 #10000
+log_interval: 1000
+save_interval: 100000 #10000
 resume_checkpoint: ''
 use_fp16: False
 fp16_scale_growth: 1.0e-3
@@ -28,20 +28,15 @@ guidance_strength: 0.2
 cond_drop_rate: 0.2
 
 # model default
-image_size: 64
-latent_dim: 768
-num_channels: 32 # single triplane feature channel
-num_res_blocks: 2
-num_heads: 4
-num_heads_upsample: -1
-num_head_channels: -1
-threedaware_resolutions: '64'
-attention_resolutions: '32,16,8'
-channel_mult: ''
+num_channels: 512
+skip_layers: '0'
+num_hid_channels: 2048
+num_layers: 20
+num_time_emb_channels: 64
+activation: 'silu'
+use_norm: True
+condition_bias: 1.0
 dropout: 0.0
-class_cond: False
-use_checkpoint: False
-use_scale_shift_norm: True
-resblock_updown: False
-use_fp16: False
-use_new_attention_order: False
+last_act: 'none'
+num_time_layers: 2
+time_last_act: False

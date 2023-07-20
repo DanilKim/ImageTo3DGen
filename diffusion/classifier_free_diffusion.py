@@ -264,14 +264,15 @@ class GaussianDiffusion:
         B, C = x.shape[:2]
         assert t.shape == (B,)
         
-        z_shape = model_kwargs["z"].shape
-
-        with th.no_grad():
+        if 'z' in model_kwargs:    # Upplying latent conditional -> classifier-free guidance
+            z_shape = model_kwargs["z"].shape
             pred_eps_cond = model(x, self._scale_timesteps(t), **model_kwargs)
-
+            
             model_kwargs["z"] = th.zeros(z_shape, device=dist_util.dev())
             pred_eps_uncond = model(x, t, **model_kwargs)
             model_output = self.w * pred_eps_cond - ( 1 - self.w ) * pred_eps_uncond
+        else:
+            model_output = model(x, self._scale_timesteps(t), **model_kwargs)
         
         assert th.isnan(x).int().sum() == 0, f"nan in tensor x_t when t = {t[0]}"
         assert th.isnan(t).int().sum() == 0, f"nan in tensor t when t = {t[0]}"

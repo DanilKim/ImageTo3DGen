@@ -6,17 +6,17 @@ import argparse
 import yaml, json, types
 import datetime
 
-from datasets.diffusion import load_data
 from diffusion.utils import dist_util, logger
 from diffusion.utils.train_utils import Trainer
 from diffusion.utils.resample import create_named_schedule_sampler
 
 from diffusion.utils.script_utils import (
-    create_triplane_model,
-    create_sr_triplane_model,
+    create_latent_diffusion_model,
     create_gaussian_diffusion
 )  
 
+from datasets.diffusion import random_latent_gen
+            
 if __name__ == '__main__':
     """
     Train a diffusion model on images.
@@ -25,10 +25,9 @@ if __name__ == '__main__':
     DEBUG = True
         
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/basediffusion_train.yaml', help='load config')
+    parser.add_argument('--config', type=str, default='configs/latentiffusion_train.yaml', help='load config')
     args = parser.parse_args()
     
-    isSR = args.config.split('/')[-1].startswith('upsample')
     
     with open(args.config, "r") as stream:
         try:
@@ -39,10 +38,7 @@ if __name__ == '__main__':
     def load_object(dct):
         return types.SimpleNamespace(**dct)
     opt = json.loads(json.dumps(opt), object_hook=load_object)
-    if isSR:
-        opt.image_size = opt.large_size
-    else:
-        opt.small_size = 0
+
     print(opt)
     
     try:
@@ -58,7 +54,7 @@ if __name__ == '__main__':
 
     logger.log('loading diffusion model...')
 
-    model = create_triplane_model(opt) if not isSR else create_sr_triplane_model(opt)
+    model = create_latent_diffusion_model(opt)
     diffusion = create_gaussian_diffusion(opt)
 
     
@@ -67,27 +63,18 @@ if __name__ == '__main__':
         logger.log("creating data loader...")
             
         if opt.data_dir != '' and not DEBUG:
-            data = load_data(
-                data_dir=opt.data_dir,
-                batch_size=opt.batch_size,
-                image_size=opt.image_size,
-                latent_dir=opt.latent_dir,
-            )
-        else:
             from torch.utils.data import DataLoader
-            from datasets.diffusion import DummyDataset
+            from datasets.diffusion import LatentDataset
             from itertools import cycle
             data = cycle(DataLoader(
-                DummyDataset(
-                    total_size=200, 
-                    image_size=opt.image_size,
-                    sr=isSR
-                ),
+                LatentDataset(opt.data_dir),
                 batch_size=opt.batch_size, 
                 shuffle=False, 
                 num_workers=1, 
                 drop_last=True
             ))
+        else:
+            data = random_latent_gen(size=2000, dim=opt.num_channels, bs=opt.batch_size)
             
         logger.log("training...")
         
@@ -126,4 +113,4 @@ if __name__ == '__main__':
             model=model,
             diffusion=diffusion,
             data=None,
-        ).sample_from_latent(opt, logger)
+        ).sample_latent(opt, logger)

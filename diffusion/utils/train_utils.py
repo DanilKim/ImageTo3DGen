@@ -368,6 +368,132 @@ class Trainer:
 
         dist.barrier()
         logger.log("sampling complete")
+        
+        
+    def sample_from_low_res(self, opt, logger):
+        all_images = []
+        all_labels = []
+        
+        # if latent_dir path is specified, opt.num_samples is ignored
+        num_samples = opt.num_samples
+        lr_img_dir = None if opt.lr_img_dir == '' else opt.lr_img_dir
+        if lr_img_dir is not None:
+            from datasets.diffusion import ImageDataset, _list_image_files_recursively
+            from itertools import cycle
+            lr_img_loader = cycle(th.utils.data.DataLoader(
+                ImageDataset(
+                    opt.small_size, 
+                    _list_image_files_recursively(lr_img_dir)
+                ),
+                batch_size = opt.batch_size,
+                shuffle=False,
+                num_workers=2,
+                drop_last=True
+            ))
+            num_samples = len(lr_img_loader)
+        
+        while len(all_images) * opt.batch_size < num_samples:
+            model_kwargs = {}
+            if lr_img_dir is not None:
+                lr_img = next(lr_img_loader)
+            else:
+                lr_img = th.randn(size=(opt.batch_size, 3*opt.num_channels, opt.small_size, opt.small_size), device=dist_util.dev())
+
+            model_kwargs["low_res"] = lr_img
+            sample_fn = (
+                self.diffusion.p_sample_loop if not opt.use_ddim else self.diffusion.ddim_sample_loop
+            )
+            sample = sample_fn(
+                self.model,
+                (opt.batch_size, 3*opt.num_channels, opt.large_size, opt.large_size),
+                clip_denoised=opt.clip_denoised,
+                progress=opt.progress,
+                model_kwargs=model_kwargs,
+            )
+            sample = sample.to(th.float32) # Triplane feature
+            sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8) # Image
+            sample = sample.permute(0, 2, 3, 1)
+            sample = sample.contiguous()
+
+            gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
+            dist.all_gather(gathered_samples, sample)  # gather not supported with NCCL
+            all_images.extend([sample.cpu().numpy() for sample in gathered_samples])
+            logger.log(f"created {len(all_images) * opt.batch_size} samples")
+
+        arr = np.concatenate(all_images, axis=0)
+        arr = arr[: opt.num_samples]
+        if opt.class_cond:
+            label_arr = np.concatenate(all_labels, axis=0)
+            label_arr = label_arr[: opt.num_samples]
+        if dist.get_rank() == 0:
+            shape_str = "x".join([str(x) for x in arr.shape])
+            out_path = os.path.join(logger.get_dir(), f"samples_{shape_str}.npz")
+            logger.log(f"saving to {out_path}")
+            if opt.class_cond:
+                np.savez(out_path, arr, label_arr)
+            else:
+                np.savez(out_path, arr)
+
+        dist.barrier()
+        logger.log("sampling complete")
+        
+        
+    def sample_latent(self, opt, logger):
+        all_zs = []
+        all_labels = []
+        
+        # if latent_dir path is specified, opt.num_samples is ignored
+        num_samples = opt.num_samples
+        
+        while len(all_zs) * opt.batch_size < num_samples:
+            model_kwargs = {}
+            if opt.class_cond:
+                classes = th.randint(
+                    low=0, high=NUM_CLASSES, size=(opt.batch_size,), device=dist_util.dev()
+                )
+                model_kwargs["y"] = classes
+            sample_fn = (
+                self.diffusion.p_sample_loop if not opt.use_ddim else self.diffusion.ddim_sample_loop
+            )
+            sample = sample_fn(
+                self.model,
+                (opt.batch_size, opt.num_channels),
+                clip_denoised=opt.clip_denoised,
+                progress=opt.progress,
+                model_kwargs=model_kwargs
+            )
+            sample = sample.to(th.float32) # Latent feature
+            sample = sample.contiguous()
+
+            gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
+            dist.all_gather(gathered_samples, sample)  # gather not supported with NCCL
+            all_zs.extend([sample.cpu().numpy() for sample in gathered_samples])
+            
+            if opt.class_cond:
+                gathered_labels = [
+                    th.zeros_like(classes) for _ in range(dist.get_world_size())
+                ]
+                dist.all_gather(gathered_labels, classes)
+                all_labels.extend([labels.cpu().numpy() for labels in gathered_labels])
+                
+            logger.log(f"created {len(all_zs) * opt.batch_size} samples")
+
+        arr = np.concatenate(all_zs, axis=0)
+        arr = arr[: opt.num_samples]
+        if opt.class_cond:
+            label_arr = np.concatenate(all_labels, axis=0)
+            label_arr = label_arr[: opt.num_samples]
+        if dist.get_rank() == 0:
+            shape_str = "x".join([str(x) for x in arr.shape])
+            out_path = os.path.join(logger.get_dir(), f"samples_{shape_str}.npz")
+            logger.log(f"saving to {out_path}")
+            if opt.class_cond:
+                np.savez(out_path, arr, label_arr)
+            else:
+                np.savez(out_path, arr)
+
+        dist.barrier()
+        logger.log("sampling complete")
 
 
 def parse_resume_step_from_filename(filename):

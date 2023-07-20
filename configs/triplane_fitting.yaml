@@ -1,0 +1,93 @@
+
+# training
+test: False # test mode
+save_mesh: False # export an obj mesh with texture
+eval_interval: 200 # evaluate on the valid set every interval epochs
+seed: 12 # random seed
+iters: 10000 # training iters
+lr:  1.0e-3 # initial learning rate
+ckpt: 'latest'
+fp16:  True # use amp mixed precision training
+backbone: 'grid_finite' # nerf backbone
+warmup_epoch: 1
+
+data_dir: '/disk2/workspace/make_blender_data/test_data'
+triplane_cpu_intermediate: False
+freeze_decoder: False
+batch_size: 16 # batch size of images
+num_rays_per_image: 4096 # number of sampled rays per image.
+
+# ngp
+cuda_ray:  False # use CUDA raymarching instead of pytorch, not supported
+max_steps: 1024 # max num steps sampled per ray (only valid when using --cuda_ray)
+num_steps: 64 # num steps sampled per ray (only valid when not using --cuda_ray)
+upsample_steps: 64 # num steps up-sampled per ray (only valid when not using --cuda_ray)
+update_extra_interval: 16 # iter interval to update extra status (only valid when using --cuda_ray)
+max_ray_batch: 4096 # batch size of rays at inference to avoid OOM (only valid when not using --cuda_ray)
+albedo_iters: 400 # training iters that only use albedo shading
+bg_radius:  0 #1.4 # if positive, use a background model at sphere(bg_radius)
+density_activation: 'exp' # density activation function
+density_thresh:  0.1 # threshold for density grid to be occupied
+lambda_tv: 0 # loss scale for total variation
+p_albedo: 0.25 # prob of iterations using albedo to train
+p_textureless: 0.5 # prob of iterations using textureless rendering is p_textureless * (1 - p_albedo)
+p_randbg: 0.0 #0.75 # prob of iterations using random background
+
+# residual blob
+blob_density:  5 # max (center) density for the density blob
+blob_radius:  0.2 # control the radius for the density blob
+
+
+# triplane
+feature_size: 256
+feature_dim: 32
+
+
+# camera
+w: 128 # render width for NeRF in training
+h: 128 # render height for NeRF in training
+normal_shape: 100 # render height for normal
+jitter_pose: True # add jitters to the randomly sampled camera poses
+bound:  1 # assume the scene is bounded in box(-bound, bound)
+dt_gamma:  0 # dt_gamma (>=0) for adaptive ray marching. set to 0 to disable, >0 to accelerate rendering (but usually with worse quality)
+min_near:  0.1 # minimum near distance for camera
+radius_range: [0.4, 1.0] # training camera radius range
+fovy_range:  [40, 70] # training camera fovy range
+
+# dir text
+dir_text:  True # direction-encode the text prompt, by appending front/side/back/overhead view
+negative_dir_text:  False # also use negative dir text prompt.
+angle_overhead:  30 # [0, angle_overhead] is the overhead region
+angle_front:  60 # [180 - front, 180 + front] 0 (front) is the front region, [0, front], [360 - front, 360] 2 (back)
+
+# loss fucntion weights
+lambda_perceptual: 0.5 # loss scale for perceptual
+lambda_entropy: 0 # loss scale for alpha entropy
+lambda_opacity:  0 # loss scale for alpha value
+lambda_orient:  0 # loss scale for orientation
+lambda_blur:  0 # loss scale for orientation
+## regularization
+lambda_dist: 0.1 # distortion loss in mipnerf360
+lambda_smooth:  0.1 # loss scale for smoothness regularization
+lambda_sparse: 0.1 # loss scale for sparsity regularization
+
+# test time
+gui:  False # start a GUI
+W: 800 # test width
+H: 800 # test height
+fovy:  60 # default GUI camera fovy
+
+
+# reference data
+rgb_path: 'data/images' # rgb path
+triplane_path: 'data/triplanes' # GT triplane path
+pose_path: 'data/poses' # pose path
+clip_img_weight: 1 # CLIP image loss
+
+# diffusion model
+#guidance:  sd_clipguide
+#min_sd: 50 # timestep range
+#max_sd: 950 # timestep range
+#eta:  0.8 # prompt classifier-free guidance
+#dataset: text2img
+#sd_name: runwayml/stable-diffusion-v1-5

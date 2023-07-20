@@ -3,7 +3,7 @@ train: True
 data_dir: ''
 schedule_sampler: uniform
 lr: 1.0e-4
-weight_decay: 0.0
+weight_decay: 1.0e-2 #0.0
 lr_anneal_steps: 0
 batch_size: 64
 microbatch: -1  # -1 disables microbatches
@@ -23,13 +23,14 @@ timestep_respacing: ''
 use_kl: False
 predict_xstart: True  # Unet predicts y_HR instead of epsilon
 rescale_timesteps: False
-rescale_learned_sigmas: False
-guidance_strength: 0.8
+rescale_learned_sigmas: True
+guidance_strength: 0.2
+cond_drop_rate: 0.2  # classifier-free guidance uncond ratio while training. 
 
 # model default
 large_size: 256
 small_size: 64
-image_size: 64
+#image_size: 64
 latent_dim: 768
 num_channels: 32 # single triplane feature channel
 num_res_blocks: 1

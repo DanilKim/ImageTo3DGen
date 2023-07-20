@@ -1,5 +1,39 @@
-# Diffusion
+# Base Docker image : pytorch/pytorch:1.12.1-cuda11.3-cudnn8-devel
+
+pandas==1.3.5
+numpy==1.21.5
+
+# Base, Upsample Diffusion
 
 tqdm==4.63.0
 mpiu4py==3.1.4 # (apt-get install libopenmpi-dev && pip install mpiu4py)
 blobfile==2.0.2
+
+
+# Text-conditioned Diffusion
+
+dalle2-pytorch==1.14.2
+
+
+# MLPDecoder & Triplane Fitting
+
+torch-ema==0.3
+ninja==1.11.1
+trimesh==3.22.4
+opencv-python==4.8.0.74
+tensorboardX==2.6.1
+matplotlib==3.5.3
+PyMCubes==0.1.4
+rich==13.4.2
+dearpygui==1.9.1
+scipy==1.7.3
+huggingface_hub==0.16.4
+diffusers==0.18.2
+transformers==4.30.2
+xatlas==0.0.7
+scikit-learn==1.0.2
+imageio==2.31.1
+imageio-ffmpeg==0.4.8
+tensorboard==2.11.2
+kornia==0.6.12
+torch_efficient_distloss==0.1.3

@@ -1,55 +1,59 @@
 # train setting
-train:
-  train: False
-  data_dir: ''
-  schedule_sampler: uniform
-  lr: 1e-4
-  weight_decay: 0.0
-  lr_anneal_steps: 0
-  batch_size: 1  # train batch size
-  microbatch: -1  # -1 disables microbatches
-  ema_rate: 0.9999  # comma-separated list of EMA values
-  log_interval: 10
-  save_interval: 10000
-  resume_checkpoint: ''
-  use_fp16: False
-  fp16_scale_growth: 1e-3
+train: False
+data_dir: ''
+schedule_sampler: uniform
+lr: 1.0e-4
+weight_decay: 0.0
+lr_anneal_steps: 0
+batch_size: 1  # train batch size
+microbatch: -1  # -1 disables microbatches
+ema_rate: 0.9999  # comma-separated list of EMA values
+log_interval: 10
+save_interval: 10000
+resume_checkpoint: ''
+use_fp16: False
+fp16_scale_growth: 1.0e-3
 
-sample:
-  clip_denoised: True
-  num_samples: 10000
-  batch_size: 16
-  use_ddim: False
-  model_path: ''
-  latent_dir: ''
+# sample setting
+clip_denoised: True
+num_samples: 200
+batch_size: 64
+use_ddim: False
+model_path: '/disk2/workspace/Rodin/log/upsamplediffusion_train/openai-2023-07-09-01-48-29-858792/model000000.pt'
+latent_dir: ''
+lr_img_dir: ''
+progress: True
 
 # diffusion default 
-diffusion:
-  learn_sigma: False
-  diffusion_steps: 1000
-  noise_schedule: 'linear'
-  timestep_respacing: ''
-  use_kl: False
-  predict_xstart: False
-  rescale_timesteps: False
-  rescale_learned_sigmas: False
-  guidance_strength: 0.2
-  latent_dim: 768
+learn_sigma: False
+sigma_small: False
+diffusion_steps: 1000
+noise_schedule: 'linear'
+timestep_respacing: ''
+use_kl: False
+predict_xstart: False
+rescale_timesteps: False
+rescale_learned_sigmas: True
+guidance_strength: 0.2
 
 # model default
-model:
-  image_size: 64
-  num_channels: 128
-  num_res_blocks: 2
-  num_heads: 4
-  num_heads_upsample: -1
-  num_head_channels: -1
-  attention_resolutions: '16,8'
-  channel_mult: ''
-  dropout: 0.0
-  class_cond: False
-  use_checkpoint: False
-  use_scale_shift_norm: True
-  resblock_updown: False
-  use_fp16: False
-  use_new_attention_order: False
+large_size: 256
+small_size: 64
+#image_size: 64
+latent_dim: 768
+num_channels: 32
+num_res_blocks: 1
+num_conv_per_resblock: 3
+num_heads: 4
+num_heads_upsample: -1
+num_head_channels: -1
+threedaware_resolutions: '64,128,256'
+attention_resolutions: '16,8'
+channel_mult: ''
+dropout: 0.0
+class_cond: False
+use_checkpoint: False
+use_scale_shift_norm: True
+resblock_updown: False
+use_fp16: False
+use_new_attention_order: False

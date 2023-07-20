@@ -18,7 +18,7 @@ clip_denoised: True
 num_samples: 100 # 10000
 batch_size: 64 # sample batch size
 use_ddim: False
-model_path: '/disk2/workspace/Rodin/log/dummy/model001000.pt'
+model_path: '/disk2/workspace/Rodin/log/basediffusion_train/openai-2023-07-10-00-26-21-000554/model000000.pt'
 latent_dir: ''
 progress: True
 

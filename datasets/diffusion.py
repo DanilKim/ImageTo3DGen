@@ -6,7 +6,11 @@ from PIL import Image
 import blobfile as bf
 from mpi4py import MPI
 import numpy as np
+
+import torch
 from torch.utils.data import DataLoader, Dataset
+
+from .utils import list_image_files_recursively
 
 DEFAULT_LATENT_DIM = 768
 
@@ -40,9 +44,9 @@ def load_data(
     """
     if not data_dir:
         raise ValueError("unspecified data directory")
-    image_paths = _list_image_files_recursively(data_dir)
+    image_paths = list_image_files_recursively(data_dir)
     if latent_dir != '':
-        latent_paths = _list_image_files_recursively(latent_dir)
+        latent_paths = list_image_files_recursively(latent_dir)
         # Assume each latent file has same file name with its corresponding image (triplane)
         # Ex) data/images/32455.jpg <==> data/triplanes/32455.npy
         # before an underscore.
@@ -70,18 +74,6 @@ def load_data(
         )
     while True:
         yield from loader
-
-
-def _list_image_files_recursively(data_dir):
-    results = []
-    for entry in sorted(bf.listdir(data_dir)):
-        full_path = bf.join(data_dir, entry)
-        ext = entry.split(".")[-1]
-        if "." in entry and ext.lower() in ["jpg", "jpeg", "png", "gif", "npy"]:
-            results.append(full_path)
-        elif bf.isdir(full_path):
-            results.extend(_list_image_files_recursively(full_path))
-    return results
 
 
 class ImageDataset(Dataset):
@@ -179,8 +171,8 @@ class TriplaneLatentDataset(Dataset):
             out_dict["z"] = np.random.normal(size=(768,))
         
         if self.train:
-            cond_prob = float(np.random.binomial(1, self.cond_prop))
-            if not cond_prob:
+            uncond_prob = float(np.random.binomial(1, self.cond_drop_rate))
+            if not uncond_prob:
                 out_dict["z"] = np.zeros(size=(out_dict["z"].shape))
             
         return np.transpose(arr, [2, 0, 1]), out_dict
@@ -189,10 +181,10 @@ class TriplaneLatentDataset(Dataset):
 class LatentDataset(Dataset):
     def __init__(self, latent_dir):
         super().__init__()
-        self.latent_paths = _list_image_files_recursively(latent_dir)
+        self.latent_paths = list_image_files_recursively(latent_dir)
 
     def __len__(self):
-        return len(self.local_images)
+        return len(self.latent_paths)
 
     def __getitem__(self, idx):
         lat_path = self.latent_paths[idx]
@@ -205,18 +197,55 @@ class LatentDataset(Dataset):
 
 
 class DummyDataset(Dataset):
-    def __init__(self, total_size, image_size=256):
+    def __init__(self, total_size, image_size=256, latent_dim=768, sr=False):
         super().__init__()
         self.size = total_size
         self.images = np.random.normal(size=(total_size,96,image_size,image_size)).astype(np.float32)
-        self.latents = np.random.normal(size=(total_size,768)).astype(np.float32)
+        if not sr:
+            self.latents = np.random.normal(size=(total_size,latent_dim)).astype(np.float32)
+        else:
+            self.latents = np.zeros(shape=(total_size,latent_dim)).astype(np.float32)
         
     def __len__(self):
         return self.size
         
     def __getitem__(self, idx):
         return self.images[idx], {"z" : self.latents[idx]}
+    
 
+class LRDataset(Dataset):
+    def __init__(self, lr_img_dir):
+        super().__init__()
+        self.lr_paths = list_image_files_recursively(lr_img_dir)
+
+    def __len__(self):
+        return len(self.lr_paths)
+
+    def __getitem__(self, idx):
+        lr_path = self.lr_paths[idx]
+        with bf.BlobFile(lr_path, "rb") as f:
+            if lr_path.split(".")[-1] in ['jpg', 'png', 'jpeg', 'gif']:
+                arr = np.load(lr_path)
+            else:
+                NotImplementedError("data must be image...")
+        return arr
+
+
+def random_latent_gen(size, dim, bs):
+    data = torch.randn(size=(size, dim))
+    indices = list(range(size))
+    
+    cnt = 0
+    while True:
+        cnt += bs
+        if cnt > size:
+            random.shuffle(indices)
+            cnt = 0
+            yield data[indices[:bs]], {}
+        else:
+            yield data[indices[cnt-bs:cnt]], {}
+            
+            
 
 def center_crop_arr(pil_image, image_size):
     # We are not on a new enough PIL to support the `reducing_gap`

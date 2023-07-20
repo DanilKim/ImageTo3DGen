@@ -24,17 +24,17 @@ def sample_pdf(bins, weights, n_samples, det=False):
     weights = weights + 1e-5  # prevent nans
     pdf = weights / torch.sum(weights, -1, keepdim=True)
     cdf = torch.cumsum(pdf, -1)
-    cdf = torch.cat([torch.zeros_like(cdf[..., :1]), cdf], -1)
+    cdf = torch.cat([torch.zeros_like(cdf[..., :1]), cdf], -1)  # [B, T]
     # Take uniform samples
     if det:
         u = torch.linspace(0. + 0.5 / n_samples, 1. - 0.5 / n_samples, steps=n_samples).to(weights.device)
-        u = u.expand(list(cdf.shape[:-1]) + [n_samples])
+        u = u.expand(list(cdf.shape[:-1]) + [n_samples])  # [B, n_samples]
     else:
-        u = torch.rand(list(cdf.shape[:-1]) + [n_samples]).to(weights.device)
+        u = torch.rand(list(cdf.shape[:-1]) + [n_samples]).to(weights.device)  # [B, n_samples]
 
     # Invert CDF
     u = u.contiguous()
-    inds = torch.searchsorted(cdf, u, right=True)
+    inds = torch.searchsorted(cdf, u, right=True)  # [B, n_samples]
     below = torch.max(torch.zeros_like(inds - 1), inds - 1)
     above = torch.min((cdf.shape[-1] - 1) * torch.ones_like(inds), inds)
     inds_g = torch.stack([below, above], -1)  # (B, n_samples, 2)
@@ -102,7 +102,7 @@ def get_rays(poses, intrinsics, H, W, N=-1, error_map=None):
 
     device = poses.device
     B = poses.shape[0]
-    fx, fy, cx, cy = intrinsics
+    fx, fy, cx, cy = intrinsics[:,0,None], intrinsics[:,1,None], intrinsics[:,2,None], intrinsics[:,3,None]
 
     i, j = custom_meshgrid(torch.linspace(0, W-1, W, device=device), torch.linspace(0, H-1, H, device=device))
     i = i.t().reshape([1, H*W]).expand([B, H*W]) + 0.5
@@ -114,8 +114,9 @@ def get_rays(poses, intrinsics, H, W, N=-1, error_map=None):
         N = min(N, H*W)
 
         if error_map is None:
-            inds = torch.randint(0, H*W, size=[N], device=device) # may duplicate
-            inds = inds.expand([B, N])
+            inds = torch.randint(0, H*W, size=[B, N], device=device) # may duplicate
+            #inds = torch.randint(0, H*W, size=[N], device=device) # may duplicate
+            #inds = inds.expand([B, N])
         else:
 
             # weighted sample on a low-reso grid

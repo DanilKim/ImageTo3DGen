@@ -92,13 +92,33 @@ def create_gaussian_diffusion(args):
         loss_type=loss_type,
         rescale_timesteps=args.rescale_timesteps,
         guidance_strength=args.guidance_strength,
-        latent_dim=args.latent_dim
+        #latent_dim=args.latent_dim
     )
-    
+
 
 def create_sr_triplane_model(args):
     from models.unet import SuperResModel
     return SuperResModel(args)
+
+
+def create_latent_diffusion_model(args):
+    from models.latentnet import MLPSkipNet
+    
+    skip_layers = tuple([int(nl) for nl in args.skip_layers.split(',')])
+    return MLPSkipNet(
+        num_channels=args.num_channels,
+        skip_layers=skip_layers,
+        num_hid_channels=args.num_hid_channels,
+        num_layers=args.num_layers,
+        num_time_emb_channels=args.num_time_emb_channels,
+        activation=args.activation,
+        use_norm=args.use_norm,
+        condition_bias=args.condition_bias,
+        dropout=args.dropout,
+        last_act=args.last_act,
+        num_time_layers=args.num_time_layers,
+        time_last_act=args.time_last_act
+    )
 
 '''
 def create_sr_triplane_model(args):
@@ -140,3 +160,5 @@ def create_sr_triplane_model(args):
         use_fp16=args.use_fp16,
     )
 '''
+
+

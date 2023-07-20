@@ -1,0 +1,51 @@
+# train setting
+train: False
+data_dir: ''
+schedule_sampler: uniform
+lr: 1.0e-4
+weight_decay: 4.0e-5 #0.0
+lr_anneal_steps: 0
+batch_size: 1024
+microbatch: -1  # -1 disables microbatches
+ema_rate: 0.9999  # comma-separated list of EMA values
+log_interval: 1000
+save_interval: 100000 #10000
+resume_checkpoint: ''
+use_fp16: False
+fp16_scale_growth: 1.0e-3
+
+# sample setting
+clip_denoised: True
+num_samples: 5000
+batch_size: 64
+use_ddim: False
+model_path: '/disk2/workspace/Rodin/log/latentdiffusion_train/tmax-2023-07-17-00-53-45-981966/model1100000.pt'
+progress: True
+
+# diffusion default 
+learn_sigma: False
+sigma_small: False
+diffusion_steps: 1000
+noise_schedule: 'linear'
+timestep_respacing: ''
+use_kl: False
+predict_xstart: False
+rescale_timesteps: False
+rescale_learned_sigmas: True
+guidance_strength: 0.2
+cond_drop_rate: 0.2
+
+# model default
+num_channels: 512
+skip_layers: '0'
+num_hid_channels: 2048
+num_layers: 20
+num_time_emb_channels: 64
+activation: 'silu'
+use_norm: True
+condition_bias: 1.0
+dropout: 0.0
+last_act: 'none'
+num_time_layers: 2
+time_last_act: False
+class_cond: False

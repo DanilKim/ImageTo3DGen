@@ -3,33 +3,23 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 import torch
-import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-import torch.distributed as dist
-import torchvision.transforms as T
 import numpy as np
-import cv2
 
-import tqdm
+import shutil
 import random
-import glob
-import tensorboardX
-import imageio
 from datetime import datetime
 
-import time
-from rich.console import Console
-from torch_ema import ExponentialMovingAverage
+import argparse
+import yaml, json, types
 
+from nerf.train_utils import Trainer
+from models.mlpdecoder import TriplaneLearner
 
-from nerf.general_utils import rand_poses, get_rays, visualize_depth
+#from utils.losses import VGGPerceptualLoss
+#from torch_ema import ExponentialMovingAverage
+
 # from nerf.diffaug import DiffAugment
-
-from torch_efficient_distloss import eff_distloss
-
-from kornia.losses import ssim_loss, inverse_depth_smoothness_loss, total_variation
-from kornia.filters import gaussian_blur2d
 
 
 def seed_everything(seed):
@@ -43,17 +33,9 @@ def seed_everything(seed):
 
 
 if __name__ == '__main__':
-    import argparse
-    import os, shutil
-    import yaml, json, types
-    
-    from models.mlpdecoder import MLPDecoder
-    from datasets.mlpdecoder import TriplaneImagePair
-    from nerf.train_utils import Trainer
-    #from utils.losses import VGGPerceptualLoss
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='configs/mlpdecoder_train.yaml', help='load config')
+    parser.add_argument('--config', type=str, default='configs/triplane_fitting.yaml', help='load config')
     args = parser.parse_args()
     
     with open(args.config, "r") as stream:
@@ -71,7 +53,7 @@ if __name__ == '__main__':
     opt.workspace = os.path.join(
                         'log', 
                         os.path.basename(args.config).split('.')[0],
-                        datetime.datetime.now().strftime("tmax-%Y-%m-%d-%H-%M-%S-%f")
+                        datetime.now().strftime("tmax-%Y-%m-%d-%H-%M-%S-%f")
                     )
 
     os.makedirs(opt.workspace, exist_ok=True)
@@ -79,38 +61,55 @@ if __name__ == '__main__':
     
     seed_everything(opt.seed)
     
-    model = MLPDecoder(opt, hidden_dim=128, num_sigma_layers=2, num_bg_layers=2)
-    
-    print(model)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     if opt.test:
+        from datasets.mlpdecoder import TriplaneDataset
+        from torch.utils.data import DataLoader
+        
+        model = None # MLPDecoder!
+        
         trainer = Trainer('lift', opt, model, device=device, workspace=opt.workspace, fp16=opt.fp16, use_checkpoint=opt.ckpt)
-        test_loader = TriplaneImagePair(opt, device=device, type='test', H=opt.H, W=opt.W, size=100, shading=opt.test_shading).dataloader()
+        test_loader = DataLoader(
+            TriplaneDataset(opt, device=device, type='test', H=opt.H, W=opt.W, size=100, shading=opt.test_shading),
+            batch_size=opt.batch_size, shuffle=False, num_workers=0
+        )
+        
         trainer.test(test_loader)
         
         if opt.save_mesh:
             trainer.save_mesh(resolution=256)
+            
     else:
-        optimizer = lambda model: torch.optim.AdamW(model.get_params(opt.lr), betas=(0.9, 0.99), eps=1e-15)
-    
-        train_loader = TriplaneImagePair(opt, device=device, type='train', H=opt.h, W=opt.w, size=100).dataloader()
+        from datasets.mlpdecoder import MultiviewImages
         
-        opt.max_epoch = np.ceil(opt.iters / len(train_loader)).astype(np.int32)
-
-        scheduler = lambda optimizer: optim.lr_scheduler.LambdaLR(optimizer, lambda iter: 1) # fixed
+        train_loader = MultiviewImages(opt, data_dir=opt.data_dir, device=device).dataloader()
+        
+        num_objects = len(train_loader)
+        
+        model = TriplaneLearner(opt, num_objects=num_objects, triplane_size=opt.feature_size, triplane_dim=opt.feature_dim, 
+                                triplane_cpu_intermediate=opt.triplane_cpu_intermediate,
+                                hidden_dim=128, num_sigma_layers=2, num_bg_layers=2)
+        
+        print(model)
+        
+        #params = [{'params': embedding.parameters()} for embedding in model.triplane_features]
+        if opt.freeze_decoder:
+            params = [{'params': model.triplane_features.parameters()}]
+        else:
+            params = [{'params': model.parameters()}]
+            
+        optimizer = torch.optim.AdamW(params, lr=opt.lr, betas=(0.9, 0.99), eps=1e-15)
+        
+        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda iter: 1) # fixed
         
         trainer = Trainer('mlp_decoder', opt, model, device=device, workspace=opt.workspace, optimizer=optimizer, ema_decay=None, fp16=opt.fp16, lr_scheduler=scheduler, use_checkpoint=opt.ckpt, eval_interval=opt.eval_interval, scheduler_update_every_step=True)
-        valid_loader = TriplaneImagePair(opt, device=device, type='val',  H=opt.H, W=opt.W, size=5).dataloader()
         
         opt.max_epoch = np.ceil(opt.iters / len(train_loader)).astype(np.int32)
     
         if True:
-            trainer.train(train_loader, valid_loader, opt.max_epoch)
-
-        test_loader = TriplaneImagePair(opt, device=device, type='test', H=opt.H, W=opt.W, size=100).dataloader()
-        trainer.test(test_loader)
+            trainer.train(train_loader, valid_loader=None, max_epochs=opt.max_epoch)
 
         if opt.save_mesh:
             trainer.save_mesh(resolution=256)

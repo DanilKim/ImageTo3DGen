@@ -1,38 +1,35 @@
 import os
 import glob
 import tqdm
-import math
 import imageio
 import random
-import warnings
 import tensorboardX
 
 import numpy as np
-import pandas as pd
 
 import time
-from datetime import datetime
 
 import cv2
-import matplotlib.pyplot as plt
+from PIL import Image
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.distributed as dist
-from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as T
 
-import trimesh
 from rich.console import Console
 from torch_ema import ExponentialMovingAverage
 
+from .general_utils import get_rays, visualize_depth
+
+from torch_efficient_distloss import eff_distloss
+
+from kornia.filters import gaussian_blur2d
+
 from packaging import version as pver
 
-import torchvision.transforms as T
-import numpy as np
-import cv2
-from PIL import Image
 
 def visualize_depth(depth, cmap=cv2.COLORMAP_JET):
     """
@@ -169,30 +166,29 @@ def srgb_to_linear(x):
 
 class Trainer(object):
     def __init__(self, 
-                 name, # name of this experiment
-                 opt, # extra conf
-                 model, # network 
-                 guidance, # guidance network
-                 criterion=None, # loss function, if None, assume inline implementation in train_step
-                 optimizer=None, # optimizer
-                 ema_decay=None, # if use EMA, set the decay
-                 lr_scheduler=None, # scheduler
-                 metrics=[], # metrics for evaluation, if None, use val_loss to measure performance, else use the first metric.
-                 local_rank=0, # which GPU am I
-                 world_size=1, # total num of GPUs
-                 device=None, # device to use, usually setting to None is OK. (auto choose device)
-                 mute=False, # whether to mute all print
-                 fp16=False, # amp optimize level
-                 eval_interval=1, # eval once every $ epoch
-                 max_keep_ckpt=2, # max num of saved ckpts in disk
-                 workspace='workspace', # workspace to save logs & ckpts
-                 best_mode='min', # the smaller/larger result, the better
-                 use_loss_as_metric=True, # use loss as the first metric
-                 report_metric_at_train=False, # also report metrics at training
-                 use_checkpoint="latest", # which ckpt to use at init time
-                 use_tensorboardX=True, # whether to use tensorboard for logging
-                 scheduler_update_every_step=False, # whether to call scheduler.step() after every train step
-                 ):
+            name, # name of this experiment
+            opt, # extra conf
+            model, # network 
+            optimizer, # optimizer
+            lr_scheduler, # scheduler
+            criterion=nn.MSELoss(), # loss function, if None, assume inline implementation in train_step
+            ema_decay=None, # if use EMA, set the decay
+            metrics=[], # metrics for evaluation, if None, use val_loss to measure performance, else use the first metric.
+            local_rank=0, # which GPU am I
+            world_size=1, # total num of GPUs
+            device=None, # device to use, usually setting to None is OK. (auto choose device)
+            mute=False, # whether to mute all print
+            fp16=False, # amp optimize level
+            eval_interval=1, # eval once every $ epoch
+            max_keep_ckpt=2, # max num of saved ckpts in disk
+            workspace='workspace', # workspace to save logs & ckpts
+            best_mode='min', # the smaller/larger result, the better
+            use_loss_as_metric=True, # use loss as the first metric
+            report_metric_at_train=False, # also report metrics at training
+            use_checkpoint="latest", # which ckpt to use at init time
+            use_tensorboardX=True, # whether to use tensorboard for logging
+            scheduler_update_every_step=False, # whether to call scheduler.step() after every train step
+        ):
         
         self.name = name
         self.opt = opt
@@ -220,39 +216,27 @@ class Trainer(object):
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
         self.model = model
-
-        # guide model
-        self.guidance = guidance
-
-        # text prompt
-        if self.guidance is not None:
-            
-            for p in self.guidance.parameters():
-                p.requires_grad = False
-
-            self.prepare_text_embeddings()
-        
-        else:
-            self.text_z = None
     
         if isinstance(criterion, nn.Module):
             criterion.to(self.device)
         self.criterion = criterion
+        #self.perc_loss = VGGPerceptualLoss()
 
         if optimizer is None:
             self.optimizer = optim.Adam(self.model.parameters(), lr=0.001, weight_decay=5e-4) # naive adam
         else:
-            self.optimizer = optimizer(self.model)
+            self.optimizer = optimizer #optimizer(self.model)
 
         if lr_scheduler is None:
             self.lr_scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda epoch: 1) # fake scheduler
         else:
-            self.lr_scheduler = lr_scheduler(self.optimizer)
+            self.lr_scheduler = lr_scheduler #lr_scheduler(self.optimizer)
 
         if ema_decay is not None:
             self.ema = ExponentialMovingAverage(self.model.parameters(), decay=ema_decay)
         else:
             self.ema = None
+
 
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.fp16)
 
@@ -305,38 +289,9 @@ class Trainer(object):
             else: # path to ckpt
                 self.log(f"[INFO] Loading {self.use_checkpoint} ...")
                 self.load_checkpoint(self.use_checkpoint)
-
-    # calculate the text embs.
-    def prepare_text_embeddings(self):
-
-        if self.opt.text is None:
-            self.log(f"[WARN] text prompt is not provided.")
-            self.text_z = None
-            return
-
-        if not self.opt.dir_text:
-            self.text_z = self.guidance.get_text_embeds([self.opt.text], [self.opt.negative])
-        else:
-            self.text_z = []
-            for d in ['front', 'side', 'back', 'side', 'overhead', 'bottom']:
-                # construct dir-encoded text
-                text = f"{self.opt.text}, {d} view"
-
-                negative_text = f"{self.opt.negative}"
-
-                # explicit negative dir-encoded text
-                if self.opt.negative_dir_text:
-                    if negative_text != '': negative_text += ', '
-
-                    if d == 'back': negative_text += "front view"
-                    elif d == 'front': negative_text += "back view"
-                    elif d == 'side': negative_text += "front view, back view"
-                    elif d == 'overhead': negative_text += "bottom view"
-                    elif d == 'bottom': negative_text += "overhead view"
-                
-                text_z = self.guidance.get_text_embeds([text], [negative_text])
-                self.text_z.append(text_z)
-
+        
+        self.gaussian_blur = T.GaussianBlur(15, sigma=(0.1, 10))
+    
     def __del__(self):
         if self.log_ptr: 
             self.log_ptr.close()
@@ -355,84 +310,162 @@ class Trainer(object):
 
     def train_step(self, data):
 
-        rays_o = data['rays_o'] # [B, N, 3]
-        rays_d = data['rays_d'] # [B, N, 3]
+        rays_o = data['rays_o'].to(self.device) # [B, N, 3]
+        rays_d = data['rays_d'].to(self.device) # [B, N, 3]
+        
+        image = data['image'].to(self.device) # [B, 3, W, H]
+        poses = data['poses'].to(self.device) # [B, 4, 4]
+        fov = data['fov']
 
         B, N = rays_o.shape[:2]
         H, W = data['H'], data['W']
 
-        # TODO: shading is not working right now...
         if self.global_step < self.opt.albedo_iters:
             shading = 'albedo'
             ambient_ratio = 1.0
+            l_p = 0
+            l_a = 1
         else: 
             rand = random.random()
-            if rand > 0.8: 
+            if rand < self.opt.p_albedo:
                 shading = 'albedo'
                 ambient_ratio = 1.0
-            # elif rand > 0.4: 
-            #     shading = 'textureless'
-            #     ambient_ratio = 0.1
-            else: 
-                shading = 'lambertian'
-                ambient_ratio = 0.1
+                l_a = torch.ones(3, device=rays_o.device, dtype=torch.float)
+                l_p = torch.zeros(3, device=rays_o.device, dtype=torch.float)
+            else:
+                # re-sample pose for normal (low resolution)
+                focal_x = self.opt.normal_shape / (2 * np.tan(fov[:,0] / 2))
+                focal_y = self.opt.normal_shape / (2 * np.tan(fov[:,1] / 2))
+                intrinsics = np.array([focal_x, focal_y, self.opt.normal_shape / 2, self.opt.normal_shape / 2])
+                rays = get_rays(poses, intrinsics, self.opt.normal_shape, self.opt.normal_shape, -1)
+                rays_o = rays['rays_o'].cuda() # [B, N, 3]
+                rays_d = rays['rays_d'].cuda() # [B, N, 3]
 
-        # _t = time.time()
+                H, W = self.opt.normal_shape, self.opt.normal_shape
+                # shading is on
+                l_a = torch.zeros(3, device=rays_o.device, dtype=torch.float) + 0.1
+                l_p = torch.zeros(3, device=rays_o.device, dtype=torch.float) + 0.9
+                if random.random() > self.opt.p_textureless:
+                    shading = 'lambertian_df'
+                    ambient_ratio = random.random() * 0.6 + 0.1
+                else:
+                    shading = 'textureless'
+                    ambient_ratio = 0
+
+
         bg_color = torch.rand((B * N, 3), device=rays_o.device) # pixel-wise random
-        outputs = self.model.render(rays_o, rays_d, staged=False, perturb=True, bg_color=bg_color, ambient_ratio=ambient_ratio, shading=shading, force_all_rays=True, **vars(self.opt))
-        pred_rgb = outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous() # [1, 3, H, W]
-        # torch.cuda.synchronize(); print(f'[TIME] nerf render {time.time() - _t:.4f}s')
-        
-        # print(shading)
-        # torch_vis_2d(pred_rgb[0])
-        
-        # text embeddings
-        if self.opt.dir_text:
-            dirs = data['dir'] # [B,]
-            text_z = self.text_z[dirs]
+
+        # original light_d is None
+        light_d = None
+        if 'subject_idx' in data:
+            outputs = self.model.render(data['subject_idx'].to(self.device), rays_o, rays_d, staged=False, perturb=True, bg_color=bg_color, ambient_ratio=ambient_ratio, shading=shading, force_all_rays=True, light_d=light_d, l_a=l_a, l_p=l_p, **vars(self.opt))
+        elif 'triplane' in data:
+            outputs = self.model.render(data['triplane'].to(self.device), rays_o, rays_d, staged=False, perturb=True, bg_color=bg_color, ambient_ratio=ambient_ratio, shading=shading, force_all_rays=True, light_d=light_d, l_a=l_a, l_p=l_p, **vars(self.opt))
         else:
-            text_z = self.text_z
+            raise NotImplementedError("data should contain either [ learnable triplane subject idex || loaded triplane ]")
         
-        # encode pred_rgb to latents
-        # _t = time.time()
-        loss = self.guidance.train_step(text_z, pred_rgb)
-        # torch.cuda.synchronize(); print(f'[TIME] total guiding {time.time() - _t:.4f}s')
+        bg_color = torch.rand((B * N, 3), device=rays_o.device) # pixel-wise random
+
+        #pred_rgb = outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous() # [1, 3, H, W]
+        #pred_depth = outputs['depth'].reshape(B, H, W, 1).permute(0, 3, 1, 2).contiguous()
+
+        
+        loss = 0
+        ww = {}
+        
+        # MSE loss
+        loss_mse = self.criterion(pred_rgb, image)
+        loss = loss + loss_mse
+        
+        ww['mse'] = loss_mse.item()
+        
+        # perceptual loss
+        #loss_perceptual = self.perc_loss(pred_rgb, data['image'].cuda(), feature_layers=[2], style_layers=[0, 1, 2, 3])
+        #loss = loss + loss_perceptual * self.opt.lambda_perceptual
 
         # occupancy loss
         pred_ws = outputs['weights_sum'].reshape(B, 1, H, W)
 
-        if self.opt.lambda_opacity > 0:
-            loss_opacity = (pred_ws ** 2).mean()
-            loss = loss + self.opt.lambda_opacity * loss_opacity
+        if (np.random.random() < self.opt.p_randbg and shading != 'textureless'):
+            # use rand bg
+            bg_color = torch.ones_like(pred_rgb) * (torch.rand((B, 3, 1, 1), device=rays_o.device) * 0.6 + 0.2)
+            pred_rgb = pred_rgb * pred_ws + bg_color * (1 - pred_ws)
 
-        if self.opt.lambda_entropy > 0:
-            alphas = (pred_ws).clamp(1e-5, 1 - 1e-5)
-            # alphas = alphas ** 2 # skewed entropy, favors 0 over 1
-            loss_entropy = (- alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)).mean()
-                    
-            loss = loss + self.opt.lambda_entropy * loss_entropy
 
-        if self.opt.lambda_orient > 0 and 'loss_orient' in outputs:
-            loss_orient = outputs['loss_orient']
-            loss = loss + self.opt.lambda_orient * loss_orient
+        if self.epoch > self.opt.warmup_epoch:
+            
+            if self.opt.lambda_opacity > 0:
+                loss_opacity = (pred_ws ** 2).mean()
+                ww['opacity'] = loss_opacity.item()
+                if loss_opacity >= 0.5:
+                    loss = loss + self.opt.lambda_opacity * 10 * loss_opacity
+                else:
+                    loss = loss + self.opt.lambda_opacity * loss_opacity
 
-        if self.opt.lambda_smooth > 0 and 'loss_smooth' in outputs:
-            loss_smooth = outputs['loss_smooth']
-            loss = loss + self.opt.lambda_smooth * loss_smooth
+            if self.opt.lambda_entropy > 0:
+                alphas = (pred_ws).clamp(1e-5, 1 - 1e-5)
+                # alphas = alphas ** 2 # skewed entropy, favors 0 over 1
+                loss_entropy = (- alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)).mean()
+                ww['entropy'] = loss_entropy.item()
+                        
+                loss = loss + self.opt.lambda_entropy * loss_entropy
+
+            if self.opt.lambda_orient > 0 and 'loss_orient' in outputs:
+                loss_orient = outputs['loss_orient']
+                ww['orient'] = loss_orient.item()
+                if self.global_step < 3000:
+                    orient_weight = self.global_step / 3000 * (self.opt.lambda_orient - 1e-4) + 1e-4
+                else:
+                    orient_weight = self.opt.lambda_orient      
+                if loss_orient.item() > 1e-2:
+                    orient_weight *= 5
+                loss = loss + orient_weight * loss_orient
+
+            if self.opt.lambda_blur > 0 and 'normals' in outputs:
+                normals = outputs['normals'].reshape(B, 3, self.opt.normal_shape, self.opt.normal_shape)
+                with torch.no_grad():
+                    normals_blur = gaussian_blur2d(normals, (9, 9), (3, 3))
+                loss_blur = (normals - normals_blur).square().mean()
+                ww['normals_blur'] = loss_blur.item()
+                loss = loss + self.opt.lambda_blur * loss_blur
+
 
         if self.global_step % 10 == 0:
             pred_depth = outputs['depth'].reshape(B, H, W, 1).permute(0, 3, 1, 2).contiguous()
-            # if self.front_view:
             with torch.no_grad():
                 im = pred_rgb
-                # im = torch.cat([pred_rgb.cpu(), self.rgb.cpu()], dim=-1)
                 self.writer.add_image('train/img', im[0], self.global_step)
                 depth = pred_depth.squeeze()
-                # depth = torch.cat([(pred_depth.cpu().squeeze()), (self.depth.cpu().squeeze())], dim=-1)
                 depth = visualize_depth(depth)
                 self.writer.add_image('train/depth', depth, self.global_step)
+
+        # Regularization
+        idx = outputs['weights_sum'] > 1e-4
+        loss_distortion = eff_distloss(outputs['weights'][idx], outputs['midpoint'][idx], outputs['deltas'][idx])
+        loss_smoothness = F.l1_loss(outputs['sigmas'], outputs['sigmas_perturbed'])
+        loss_sparsity = torch.norm(outputs['weights_sum'], p=1)
+        
+        ww['distortion'] = loss_distortion.item()
+        ww['smoothness'] = loss_smoothness.item()
+        ww['sparsity'] = loss_sparsity.item()
+        
+        loss = loss \
+            + loss_distortion * self.opt.lambda_dist \
+            + loss_smoothness * self.opt.lambda_smooth \
+            + loss_sparsity * self.opt.lambda_sparse
             
-        return pred_rgb, pred_ws, loss
+
+        return pred_rgb, ww, loss
+
+    def post_train_step(self):
+
+        if self.opt.backbone == 'grid':
+
+            lambda_tv = min(1.0, self.global_step / 1000) * self.opt.lambda_tv
+            # unscale grad before modifying it!
+            # ref: https://pytorch.org/docs/stable/notes/amp_examples.html#gradient-clipping
+            self.scaler.unscale_(self.optimizer)
+            self.model.encoder.grad_total_variation(lambda_tv, None, self.model.bound)
 
     def eval_step(self, data):
 
@@ -449,17 +482,10 @@ class Trainer(object):
         outputs = self.model.render(rays_o, rays_d, staged=True, perturb=False, bg_color=None, light_d=light_d, ambient_ratio=ambient_ratio, shading=shading, force_all_rays=True, **vars(self.opt))
         pred_rgb = outputs['image'].reshape(B, H, W, 3)
         pred_depth = outputs['depth'].reshape(B, H, W)
-        pred_ws = outputs['weights_sum'].reshape(B, H, W)
-        # mask_ws = outputs['mask'].reshape(B, H, W) # near < far
 
-        # loss_ws = pred_ws.sum() / mask_ws.sum()
-        # loss_ws = pred_ws.mean()
+        # loss = self.opt.lambda_entropy * loss_entropy
+        loss = torch.zeros([1], device=pred_rgb.device, dtype=pred_rgb.dtype)
 
-        alphas = (pred_ws).clamp(1e-5, 1 - 1e-5)
-        # alphas = alphas ** 2 # skewed entropy, favors 0 over 1
-        loss_entropy = (- alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)).mean()
-                
-        loss = self.opt.lambda_entropy * loss_entropy
 
         return pred_rgb, pred_depth, loss
 
@@ -483,8 +509,9 @@ class Trainer(object):
 
         pred_rgb = outputs['image'].reshape(B, H, W, 3)
         pred_depth = outputs['depth'].reshape(B, H, W)
+        pred_mask = outputs['weights_sum'].reshape(B, H, W) > 0.95
 
-        return pred_rgb, pred_depth
+        return pred_rgb, pred_depth, pred_mask
 
 
     def save_mesh(self, save_path=None, resolution=128):
@@ -499,12 +526,28 @@ class Trainer(object):
         self.model.export_mesh(save_path, resolution=resolution)
 
         self.log(f"==> Finished saving mesh.")
+        
+    
+    def save_triplane(self, subject_list, save_path=None):
+        assert len(subject_list) == len(self.model.triplane_features), \
+            "length of subject list & triplane feature number should match!!"
+    
+        if save_path is None:
+            save_path = os.path.join(self.workspace, 'mesh')
+        
+        self.log(f"==> Saving Leanred Triplanes to {save_path}")
+        
+        os.makedirs(save_path, exist_ok=True)
+        
+        dim, size = self.opt.feature_dim, self.opt.feature_size
+        for idx, triplane in enumerate(self.model.triplane_features):
+            subject = subject_list[idx]
+            print(f'[{idx+1}/{len(subject_list)}] Saving to {save_path}/{subject}.npy')
+            np.save(f'{save_path}/{subject}.npy', triplane.weight.detach().numpy().reshape(3, dim, size, size))
 
     ### ------------------------------
 
     def train(self, train_loader, valid_loader, max_epochs):
-
-        assert self.text_z is not None, 'Training must provide a text prompt!'
 
         if self.use_tensorboardX and self.local_rank == 0:
             self.writer = tensorboardX.SummaryWriter(os.path.join(self.workspace, "run", self.name))
@@ -518,10 +561,19 @@ class Trainer(object):
 
             if self.workspace is not None and self.local_rank == 0:
                 self.save_checkpoint(full=True, best=False)
+                
+                # Save learned triplanes if triplane fitting mode
+                if hasattr(self.model, 'triplane_features'):
+                    self.save_triplane(train_loader.dataset.subjects, self.workspace)
 
-            if self.epoch % self.eval_interval == 0:
-                self.evaluate_one_epoch(valid_loader)
-                self.save_checkpoint(full=False, best=True)
+            if valid_loader is not None:
+                if self.epoch % self.eval_interval == 0:
+                    self.evaluate_one_epoch(valid_loader)
+                    self.save_checkpoint(full=False, best=True)
+                    
+                    # Save learned triplanes if triplane fitting mode
+                    if hasattr(self.model, 'triplane_features'):
+                        self.save_triplane(valid_loader.dataset.subjects, self.workspace)
 
         end_t = time.time()
 
@@ -559,13 +611,14 @@ class Trainer(object):
             for i, data in enumerate(loader):
                 
                 with torch.cuda.amp.autocast(enabled=self.fp16):
-                    preds, preds_depth = self.test_step(data)
+                    preds, preds_depth, preds_mask = self.test_step(data)
 
                 pred = preds[0].detach().cpu().numpy()
                 pred = (pred * 255).astype(np.uint8)
 
-                pred_depth = preds_depth[0].detach().cpu().numpy()
-                pred_depth = (pred_depth * 255).astype(np.uint8)
+                # pred_depth = preds_depth[0].detach().cpu().numpy()
+                pred_depth = visualize_depth(preds_depth[0])
+                pred_depth = (pred_depth * 255).cpu().permute(1, 2, 0).numpy().astype(np.uint8)
 
                 if write_video:
                     all_preds.append(pred)
@@ -584,123 +637,7 @@ class Trainer(object):
             imageio.mimwrite(os.path.join(save_path, f'{name}_depth.mp4'), all_preds_depth, fps=25, quality=8, macro_block_size=1)
 
         self.log(f"==> Finished Test.")
-    
-    # [GUI] train text step.
-    def train_gui(self, train_loader, step=16):
-
-        self.model.train()
-
-        total_loss = torch.tensor([0], dtype=torch.float32, device=self.device)
         
-        loader = iter(train_loader)
-
-        for _ in range(step):
-            
-            # mimic an infinite loop dataloader (in case the total dataset is smaller than step)
-            try:
-                data = next(loader)
-            except StopIteration:
-                loader = iter(train_loader)
-                data = next(loader)
-
-            # update grid every 16 steps
-            if self.model.cuda_ray and self.global_step % self.opt.update_extra_interval == 0:
-                with torch.cuda.amp.autocast(enabled=self.fp16):
-                    self.model.update_extra_state()
-            
-            self.global_step += 1
-
-            self.optimizer.zero_grad()
-
-            with torch.cuda.amp.autocast(enabled=self.fp16):
-                pred_rgbs, pred_ws, loss = self.train_step(data)
-         
-            self.scaler.scale(loss).backward()
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            
-            if self.scheduler_update_every_step:
-                self.lr_scheduler.step()
-
-            total_loss += loss.detach()
-
-        if self.ema is not None:
-            self.ema.update()
-
-        average_loss = total_loss.item() / step
-
-        if not self.scheduler_update_every_step:
-            if isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                self.lr_scheduler.step(average_loss)
-            else:
-                self.lr_scheduler.step()
-
-        outputs = {
-            'loss': average_loss,
-            'lr': self.optimizer.param_groups[0]['lr'],
-        }
-        
-        return outputs
-
-    
-    # [GUI] test on a single image
-    def test_gui(self, pose, intrinsics, W, H, bg_color=None, spp=1, downscale=1, light_d=None, ambient_ratio=1.0, shading='albedo'):
-        
-        # render resolution (may need downscale to for better frame rate)
-        rH = int(H * downscale)
-        rW = int(W * downscale)
-        intrinsics = intrinsics * downscale
-
-        pose = torch.from_numpy(pose).unsqueeze(0).to(self.device)
-
-        rays = get_rays(pose, intrinsics, rH, rW, -1)
-
-        # from degree theta/phi to 3D normalized vec
-        light_d = np.deg2rad(light_d)
-        light_d = np.array([
-            np.sin(light_d[0]) * np.sin(light_d[1]),
-            np.cos(light_d[0]),
-            np.sin(light_d[0]) * np.cos(light_d[1]),
-        ], dtype=np.float32)
-        light_d = torch.from_numpy(light_d).to(self.device)
-
-        data = {
-            'rays_o': rays['rays_o'],
-            'rays_d': rays['rays_d'],
-            'H': rH,
-            'W': rW,
-            'light_d': light_d,
-            'ambient_ratio': ambient_ratio,
-            'shading': shading,
-        }
-        
-        self.model.eval()
-
-        if self.ema is not None:
-            self.ema.store()
-            self.ema.copy_to()
-
-        with torch.no_grad():
-            with torch.cuda.amp.autocast(enabled=self.fp16):
-                # here spp is used as perturb random seed!
-                preds, preds_depth = self.test_step(data, bg_color=bg_color, perturb=spp)
-
-        if self.ema is not None:
-            self.ema.restore()
-
-        # interpolation to the original resolution
-        if downscale != 1:
-            # have to permute twice with torch...
-            preds = F.interpolate(preds.permute(0, 3, 1, 2), size=(H, W), mode='nearest').permute(0, 2, 3, 1).contiguous()
-            preds_depth = F.interpolate(preds_depth.unsqueeze(1), size=(H, W), mode='nearest').squeeze(1)
-
-        outputs = {
-            'image': preds[0].detach().cpu().numpy(),
-            'depth': preds_depth[0].detach().cpu().numpy(),
-        }
-
-        return outputs
-
     def train_one_epoch(self, loader):
         self.log(f"==> Start Training {self.workspace} Epoch {self.epoch}, lr={self.optimizer.param_groups[0]['lr']:.6f} ...")
 
@@ -734,7 +671,7 @@ class Trainer(object):
             self.optimizer.zero_grad()
 
             with torch.cuda.amp.autocast(enabled=self.fp16):
-                pred_rgbs, pred_ws, loss = self.train_step(data)
+                pred_rgbs, ww, loss = self.train_step(data)
          
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optimizer)
@@ -747,13 +684,15 @@ class Trainer(object):
             total_loss += loss_val
 
             if self.local_rank == 0:
-                # if self.report_metric_at_train:
-                #     for metric in self.metrics:
-                #         metric.update(preds, truths)
-                        
                 if self.use_tensorboardX:
                     self.writer.add_scalar("train/loss", loss_val, self.global_step)
                     self.writer.add_scalar("train/lr", self.optimizer.param_groups[0]['lr'], self.global_step)
+                    for k, v in ww.items():
+                        if k == 'tot':
+                            continue
+                        if k == 'sd_component':
+                            continue
+                        self.writer.add_scalar(f"train/loss_{k}", v, self.global_step)
 
                 if self.scheduler_update_every_step:
                     pbar.set_description(f"loss={loss_val:.4f} ({total_loss/self.local_step:.4f}), lr={self.optimizer.param_groups[0]['lr']:.6f}")

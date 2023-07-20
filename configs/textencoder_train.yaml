@@ -1,8 +1,9 @@
 # train setting
 train: True
 data_dir: ''
+model_path: ''
 schedule_sampler: uniform
-lr: 1.0e-4
+lr: 4.0e-5
 weight_decay: 1.0e-2 #0.0
 lr_anneal_steps: 0
 batch_size: 64
@@ -14,34 +15,34 @@ resume_checkpoint: ''
 use_fp16: False
 fp16_scale_growth: 1.0e-3
 
-# diffusion default 
+# sampling setting
+
+# diffusion
+diffusion_steps: 1000
+cond_drop_prob: 0.2
+loss_type: 'l2'
+condition_on_text_encodings: True
+
+
 learn_sigma: False
 sigma_small: False
-diffusion_steps: 1000
 noise_schedule: 'linear'
 timestep_respacing: ''
 use_kl: False
-predict_xstart: False
+predict_x_start: True
 rescale_timesteps: False
 rescale_learned_sigmas: True
 guidance_strength: 0.2
-cond_drop_rate: 0.2
 
 # model default
-image_size: 64
-latent_dim: 768
-num_channels: 32 # single triplane feature channel
-num_res_blocks: 2
-num_heads: 4
-num_heads_upsample: -1
-num_head_channels: -1
-threedaware_resolutions: '64'
-attention_resolutions: '32,16,8'
-channel_mult: ''
-dropout: 0.0
-class_cond: False
-use_checkpoint: False
-use_scale_shift_norm: True
-resblock_updown: False
-use_fp16: False
-use_new_attention_order: False
+embed_dim: 768
+depth: 24
+dim_head: 64
+heads: 32
+normformer: True
+attn_dropout: 5.0e-2
+ff_dropout: 5.0e-2
+num_time_embeds: 1
+num_image_embeds: 1
+num_text_embeds: 1
+ff_mult: 4
