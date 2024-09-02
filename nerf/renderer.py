@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 import mcubes
 from nerf import raymarching
-from .train_utils import custom_meshgrid, safe_normalize
+from .general_utils import custom_meshgrid, safe_normalize
 
 def sample_pdf(bins, weights, n_samples, det=False):
     # This implementation is from NeRF
@@ -127,7 +127,7 @@ class NeRFRenderer(nn.Module):
         self.local_step = 0
 
     @torch.no_grad()
-    def export_mesh(self, path, resolution=None, S=128):
+    def export_mesh(self, path, resolution=None, S=128, **kwargs):
 
         if resolution is None:
             resolution = self.grid_size
@@ -147,8 +147,8 @@ class NeRFRenderer(nn.Module):
                 for zi, zs in enumerate(Z):
                     xx, yy, zz = custom_meshgrid(xs, ys, zs)
                     pts = torch.cat([xx.reshape(-1, 1), yy.reshape(-1, 1), zz.reshape(-1, 1)], dim=-1) # [S, 3]
-                    val = self.density(pts.cuda())
-                    sigmas[xi * S: xi * S + len(xs), yi * S: yi * S + len(ys), zi * S: zi * S + len(zs)] = val['sigma'].reshape(len(xs), len(ys), len(zs)).detach().cpu().numpy() # [S, 1] --> [x, y, z]
+                    val = self.density(pts.unsqueeze(0).cuda(), **kwargs)
+                    sigmas[xi * S: xi * S + len(xs), yi * S: yi * S + len(ys), zi * S: zi * S + len(zs)] = val['sigma'].squeeze(0).reshape(len(xs), len(ys), len(zs)).detach().cpu().numpy() # [S, 1] --> [x, y, z]
 
         vertices, triangles = mcubes.marching_cubes(sigmas, density_thresh)
 
@@ -221,9 +221,10 @@ class NeRFRenderer(nn.Module):
                 head = 0
                 while head < xyzs.shape[0]:
                     tail = min(head + 640000, xyzs.shape[0])
-                    results_ = self.density(xyzs[head:tail])
-                    all_sigmas.append(results_['sigma'].float())
-                    all_feats.append(results_['albedo'].float())
+                    results_ = self.density(xyzs[None, head:tail], **kwargs)
+                    all_sigmas.append(results_['sigma'].squeeze().float())
+                    albedo = self.color(xyzs[None, head:tail], results_['feat'].float())
+                    all_feats.append(albedo.squeeze().float())
                     head += 640000
 
                 sigmas[mask] = torch.cat(all_sigmas, dim=0)

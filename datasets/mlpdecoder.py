@@ -163,7 +163,7 @@ class MultiviewImages(Dataset):
                 assert self.H == self.camera_info[subject]['h'] and self.W == self.camera_info[subject]['w'], \
                     "Images of all subjects should have equal sizes"
                 
-            for im in os.listdir(subject_path + '/train'):
+            for im in sorted(os.listdir(subject_path + '/train')):
                 self.image_pose_pairs.append({
                     'subject': subject,
                     'subject_idx': i,
@@ -191,6 +191,9 @@ class MultiviewImages(Dataset):
         # poses, dirs = rand_poses(100, self.device, return_dirs=self.opt.dir_text, radius_range=self.radius_range)
         # visualize_poses(poses.detach().cpu().numpy())
 
+    def __len__(self):
+        return len(self.image_pose_pairs)
+
 
     def collate(self, index):
 
@@ -206,7 +209,7 @@ class MultiviewImages(Dataset):
         camera_infos = [self.camera_info[subject] for subject in subjects]
         
         # focal
-        fov = np.array([[ci['camera_angle_x'], ci['camera_angle_y']] for ci in camera_infos])
+        fov = torch.stack([torch.FloatTensor([ci['camera_angle_x'], ci['camera_angle_y']]) for ci in camera_infos], dim=0)
         intrinsics = torch.stack([torch.FloatTensor([
             ci['fl_x'],
             ci['fl_y'],
@@ -214,16 +217,17 @@ class MultiviewImages(Dataset):
             ci['cy'],
         ]) for ci in camera_infos], dim=0)
 
-        rays = get_rays(poses, intrinsics, self.H, self.W, self.opt.num_rays_per_image)
+        rays = get_rays(poses, intrinsics, self.H, self.W, self.opt.num_rays_per_image if self.training else -1)
 
         image_sampled = []
-        for ipp in image_pose_pairs:
+        for i, ipp in enumerate(image_pose_pairs):
             image = toTensor(Image.open(ipp['image_path']).convert('RGB'))
             c, h, w = image.size()
             assert c == 3 and h == self.H and w == self.W
             image = image.reshape(3, self.H*self.W)
-            image_sampled.append(image[:,rays['inds']])
+            image_sampled.append(image[:,rays['inds'][i]])
         image_sampled = torch.stack(image_sampled, dim=0)
+        image_sampled = image_sampled.permute(0, 2, 1).contiguous()
         
         if self.shading:
             data = {
@@ -258,6 +262,6 @@ class MultiviewImages(Dataset):
     
     
     def dataloader(self):
-        loader = DataLoader(list(range(len(self.subjects))), batch_size=self.opt.batch_size, collate_fn=self.collate, shuffle=self.training, num_workers=0)
+        loader = DataLoader(list(range(len(self.image_pose_pairs))), batch_size=self.opt.batch_size, collate_fn=self.collate, shuffle=self.training, num_workers=0)
         loader._data = self # an ugly fix... we need to access dataset in trainer.
         return loader

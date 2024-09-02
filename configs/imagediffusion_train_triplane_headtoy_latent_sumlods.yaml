@@ -1,0 +1,60 @@
+# train setting
+train: True
+data_dir: '/disk2/jskim_storage/TriplaneDataset/only_head_obj8_170ep/lod_sum_triplanes/' # '/disk2/datasets/image_data/imagenet_64x64_train'
+latent_dir: '/disk2/jskim_storage/TriplaneDataset/only_head_obj8_170ep/clip' # ''
+noise_dir: '' #'/disk2/datasets/triplane_data/panic/toy/LOD=4_EPOCH=20_OBJ=8/noise'
+schedule_sampler: uniform
+lr: 5.0e-5 # 1.0e-4 
+weight_decay: 0.05
+microbatch: -1  # -1 disables microbatches
+bound: '-1.0,1.0'
+ema_rate: 0.9999  # comma-separated list of EMA values
+resume_checkpoint: ''
+batch_size: 2 # training batch size
+log_interval: 200
+save_interval: 20000
+
+# diffusion default 
+learn_sigma: True
+sigma_small: False
+diffusion_steps: 1000
+noise_schedule: 'linear'
+timestep_respacing: '1000'
+use_kl: False
+predict_xstart: False
+rescale_timesteps: False
+rescale_learned_sigmas: False
+guidance_strength: 1.0 # Only for sampling??
+
+# model default
+image_size: 256
+in_channels: 96
+out_channels: 96
+latent_dim: 512 
+model_channels: 256 # 320 # 256
+num_res_blocks: 2 #2
+num_heads: 4 #1
+num_heads_upsample: -1
+num_head_channels: 64 #-1
+attention_resolutions: '32,16,8' #'16'
+channel_mult: '' #'1,2,4,8'
+dropout: 0.1
+class_cond: False
+use_checkpoint: False
+use_scale_shift_norm: True
+resblock_updown: True
+use_fp16: True
+fp16_scale_growth: 1.0e-3
+use_new_attention_order: True #False
+
+# classifier
+#anneal_lr: True 
+lr_anneal_steps: 0
+#iterations: 300000
+#classifier_depth: 4
+#classifier_width: 128
+#classifier_pool: attention
+#classifier_resblock_updown: True
+#classifier_use_scale_shift_norm: True
+#classifier_use_fp16: False
+#classifier_attention_resolutions: '32,16,8'

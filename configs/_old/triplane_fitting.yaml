@@ -1,30 +1,30 @@
 
 # training
 test: False # test mode
-save_mesh: False # export an obj mesh with texture
+save_mesh: True # export an obj mesh with texture
 eval_interval: 200 # evaluate on the valid set every interval epochs
 seed: 12 # random seed
-iters: 10000 # training iters
+iters: 100000 # training iters
 lr:  1.0e-3 # initial learning rate
 ckpt: 'latest'
 fp16:  True # use amp mixed precision training
 backbone: 'grid_finite' # nerf backbone
 warmup_epoch: 1
 
-data_dir: '/disk2/workspace/make_blender_data/test_data'
+data_dir: '/disk2/workspace/make_blender_data/single_data' #test_data'
 triplane_cpu_intermediate: False
 freeze_decoder: False
-batch_size: 16 # batch size of images
+batch_size: 1 # batch size of images
 num_rays_per_image: 4096 # number of sampled rays per image.
 
 # ngp
 cuda_ray:  False # use CUDA raymarching instead of pytorch, not supported
 max_steps: 1024 # max num steps sampled per ray (only valid when using --cuda_ray)
-num_steps: 64 # num steps sampled per ray (only valid when not using --cuda_ray)
-upsample_steps: 64 # num steps up-sampled per ray (only valid when not using --cuda_ray)
+num_steps: 256 # num steps sampled per ray (only valid when not using --cuda_ray)
+upsample_steps: 256 # num steps up-sampled per ray (only valid when not using --cuda_ray)
 update_extra_interval: 16 # iter interval to update extra status (only valid when using --cuda_ray)
-max_ray_batch: 4096 # batch size of rays at inference to avoid OOM (only valid when not using --cuda_ray)
-albedo_iters: 400 # training iters that only use albedo shading
+max_ray_batch: 86106 #32768 # 4096 # batch size of rays at inference to avoid OOM (only valid when not using --cuda_ray)
+albedo_iters: 100000 #400 # training iters that only use albedo shading
 bg_radius:  0 #1.4 # if positive, use a background model at sphere(bg_radius)
 density_activation: 'exp' # density activation function
 density_thresh:  0.1 # threshold for density grid to be occupied
@@ -67,9 +67,9 @@ lambda_opacity:  0 # loss scale for alpha value
 lambda_orient:  0 # loss scale for orientation
 lambda_blur:  0 # loss scale for orientation
 ## regularization
-lambda_dist: 0.1 # distortion loss in mipnerf360
-lambda_smooth:  0.1 # loss scale for smoothness regularization
-lambda_sparse: 0.1 # loss scale for sparsity regularization
+lambda_dist: 0.0 # distortion loss in mipnerf360
+lambda_smooth:  0.0 # loss scale for smoothness regularization
+lambda_sparse: 0.0 # loss scale for sparsity regularization
 
 # test time
 gui:  False # start a GUI

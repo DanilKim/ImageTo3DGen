@@ -1,0 +1,51 @@
+# train setting
+train: True
+data_dir: '/disk2/datasets/image_data/lsun/cat/images'
+latent_dir: ''
+schedule_sampler: uniform
+lr: 1.0e-4
+weight_decay: 0.0
+lr_anneal_steps: 0
+batch_size: 1  # train batch size
+microbatch: -1  # -1 disables microbatches
+ema_rate: 0.9999  # comma-separated list of EMA values
+log_interval: 200
+save_interval: 10000
+resume_checkpoint: ''
+use_fp16: True
+fp16_scale_growth: 1.0e-3
+
+
+# diffusion default 
+learn_sigma: True
+#sigma_small: False
+diffusion_steps: 1000
+noise_schedule: 'linear'
+timestep_respacing: '250'
+use_kl: False
+predict_xstart: False
+rescale_timesteps: False
+rescale_learned_sigmas: False
+guidance_strength: 0.2
+
+# model default
+image_size: 256 # == large size
+small_size: 64
+in_channels: 3
+out_channels: 3
+latent_dim: 768
+model_channels: 192
+num_res_blocks: 2
+num_conv_per_resblock: 3
+num_heads: 4
+num_heads_upsample: -1
+num_head_channels: -1
+attention_resolutions: '32,16,8'
+channel_mult: ''
+dropout: 0.0
+class_cond: False # True
+use_checkpoint: False
+use_scale_shift_norm: True
+resblock_updown: True
+use_fp16: True
+use_new_attention_order: False

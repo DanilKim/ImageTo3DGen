@@ -14,7 +14,6 @@ from diffusion.utils.nn import (
     checkpoint,
     conv_nd,
     linear,
-    avg_pool_nd,
     zero_module,
     normalization,
     timestep_embedding,
@@ -155,7 +154,8 @@ class ResBlock(EmbedBlock):
             nn.Conv2d(in_ch, out_ch, kernel_size = 3, padding = 1),
         )
 
-        self.temb_proj = nn.Sequential(
+        # timestep projection
+        self.emb_layers = nn.Sequential(
             nn.SiLU(),
             linear(
                 tdim,
@@ -167,7 +167,8 @@ class ResBlock(EmbedBlock):
             nn.SiLU(),
             linear(
                 zdim,
-                2 * out_ch if use_scale_shift_norm else out_ch,
+                out_ch
+                #2 * out_ch if use_scale_shift_norm else out_ch,
             ),
         )
 
@@ -200,7 +201,7 @@ class ResBlock(EmbedBlock):
             self._forward, (x, temb, zemb), self.parameters(), self.use_checkpoint
         )
 
-    def _forward(self, x:th.Tensor, temb:th.Tensor, zemb:th.Tensor) -> th.Tensor:
+    def _forward(self, x:th.Tensor, temb:th.Tensor, zemb:th.Tensor=None) -> th.Tensor:
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
             h = in_rest(x)
@@ -210,16 +211,22 @@ class ResBlock(EmbedBlock):
         else:
             h = self.in_layers(x)
 
-        emb_out = self.temb_proj(temb)[:, :, None, None]
-        emb_out += self.zemb_proj(zemb)[:, :, None, None]
+        emb_out = self.emb_layers(temb).type(h.dtype)[:, :, None, None]
+        # if zemb is not None:
+        #     emb_out += self.zemb_proj(zemb).type(h.dtype)[:, :, None, None]
 
         if self.use_scale_shift_norm:
             out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
+            
             scale, shift = th.chunk(emb_out, 2, dim=1)
             h = out_norm(h) * (1 + scale) + shift
+            if zemb is not None:
+                h *= (1 + self.zemb_proj(zemb).type(h.dtype)[:, :, None, None]) # no shift for z
             h = out_rest(h)
         else:
             h = h + emb_out
+            if zemb is not None:
+                h *= self.zemb_proj(zemb).type(h.dtype)[:, :, None, None]
             h = self.out_layers(h)
 
         return self.skip_connection(x) + h
@@ -396,8 +403,8 @@ class UNetModel(nn.Module):
     def __init__(
         self,
         image_size,
-        latent_dim,
         in_channels,
+        latent_dim,
         model_channels,
         out_channels,
         num_res_blocks,
@@ -424,6 +431,7 @@ class UNetModel(nn.Module):
         self.image_size = image_size
         self.in_channels = in_channels
         self.model_channels = model_channels
+        self.latent_dim = latent_dim
         self.out_channels = out_channels
         self.num_res_blocks = num_res_blocks
         self.attention_resolutions = attention_resolutions
@@ -442,18 +450,18 @@ class UNetModel(nn.Module):
         self.use_new_attention_order = use_new_attention_order
 
         time_embed_dim = model_channels * 4
+        self.time_embed_dim = time_embed_dim
+        
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
             nn.SiLU(),
             linear(time_embed_dim, time_embed_dim),
         )
-
-        self.z_emb = nn.Sequential(
-            linear(latent_dim, time_embed_dim),
-            nn.SiLU(),
-            linear(time_embed_dim, time_embed_dim),
-        )
-
+        
+        ########## Semantic z global projection #############
+        #self.z_emb = nn.Linear(latent_dim, latent_dim)
+        ########## Semantic z global projection #############
+        
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
 
@@ -471,7 +479,7 @@ class UNetModel(nn.Module):
                         in_ch=ch,
                         out_ch=int(mult * model_channels),
                         tdim=time_embed_dim,
-                        zdim=time_embed_dim,
+                        zdim=latent_dim,
                         droprate=dropout,
                         use_checkpoint=use_checkpoint,
                         use_scale_shift_norm=use_scale_shift_norm,
@@ -499,7 +507,7 @@ class UNetModel(nn.Module):
                             in_ch=ch,
                             out_ch=out_ch,
                             tdim=time_embed_dim,
-                            zdim=time_embed_dim,
+                            zdim=latent_dim,
                             droprate=dropout,
                             use_checkpoint=use_checkpoint,
                             use_scale_shift_norm=use_scale_shift_norm,
@@ -521,7 +529,7 @@ class UNetModel(nn.Module):
                 in_ch=ch,
                 out_ch=ch,
                 tdim=time_embed_dim,
-                zdim=time_embed_dim,
+                zdim=latent_dim,
                 droprate=dropout,
                 use_checkpoint=use_checkpoint,
                 use_scale_shift_norm=use_scale_shift_norm,
@@ -537,7 +545,7 @@ class UNetModel(nn.Module):
                 in_ch=ch,
                 out_ch=ch,
                 tdim=time_embed_dim,
-                zdim=time_embed_dim,
+                zdim=latent_dim,
                 droprate=dropout,
                 use_checkpoint=use_checkpoint,
                 use_scale_shift_norm=use_scale_shift_norm,
@@ -553,7 +561,7 @@ class UNetModel(nn.Module):
                     ResBlock(
                         in_ch=ch + ich,
                         tdim=time_embed_dim,
-                        zdim=time_embed_dim,
+                        zdim=latent_dim,
                         droprate=dropout,
                         out_ch=int(model_channels * mult),
                         use_checkpoint=use_checkpoint,
@@ -577,7 +585,7 @@ class UNetModel(nn.Module):
                         ResBlock(
                             in_ch=ch,
                             tdim=time_embed_dim,
-                            zdim=time_embed_dim,
+                            zdim=latent_dim,
                             droprate=dropout,
                             out_ch=out_ch,
                             use_checkpoint=use_checkpoint,
@@ -614,7 +622,7 @@ class UNetModel(nn.Module):
         self.output_blocks.apply(convert_module_to_f32)
 
 
-    def forward(self, x, timesteps, z):
+    def forward(self, x, timesteps, z=None, y=None):
         """
         Apply the model to an input batch.
 
@@ -626,18 +634,44 @@ class UNetModel(nn.Module):
 
         hs = []
         temb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-        zemb = self.z_emb(z)
+        
+        ########## Semantic z global projection #############
+        #if z is not None:
+        #    z = self.z_emb(z) if z is not None else None
+        ########## Semantic z global projection #############
+
+        if self.num_classes is not None:
+            assert y.shape == (x.shape[0],)
+            temb = temb + self.label_emb(y)
 
         h = x.type(self.dtype)
         for module in self.input_blocks:
-            h = module(h, temb, zemb)
+            h = module(h, temb, z)
             hs.append(h)
-        h = self.middle_block(h, temb, zemb)
+        h = self.middle_block(h, temb, z)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, temb, zemb)
+            h = module(h, temb, z)
         h = h.type(x.dtype)
         return self.out(h)
+
+
+
+class SuperResModel(UNetModel):
+    """
+    A UNetModel that performs super-resolution.
+
+    Expects an extra kwarg `low_res` to condition on a low-resolution image.
+    """
+
+    def __init__(self, image_size, in_channels, *args, **kwargs):
+        super().__init__(image_size, in_channels * 2, *args, **kwargs)
+
+    def forward(self, x, timesteps, z=None, low_res=None, **kwargs):
+        _, _, new_height, new_width = x.shape
+        upsampled = F.interpolate(low_res, (new_height, new_width), mode="bilinear")
+        x = th.cat([x, upsampled], dim=1)
+        return super().forward(x, timesteps, z, **kwargs)
 
 
 
@@ -665,7 +699,7 @@ class ThreedAwareConv(nn.Module):
         B, C, H, W = y.size()
         assert self.in_ch == C # input tensor channel size must match conv weight size
 
-        # y = B x [y_uv, y_vw, y_wu]
+        # y        = B x [y_uv, y_vw, y_wu]
         # row_pool = B x [y_(.)v, y_(.)w, y_(.)u]
         # col_pool = B x [y_u(.), y_v(.), y_w(.)]
         row_pool = th.mean(y, dim=-2, keepdim=True).expand_as(y) # [B, 3C, 1, W] -> [B, 3C, H, W]
@@ -673,8 +707,8 @@ class ThreedAwareConv(nn.Module):
 
         roll_out = th.stack([
             y,
-            th.roll(row_pool, self.in_ch//3, dims=1),
-            th.roll(col_pool, self.in_ch//3, dims=-1)
+            th.roll(row_pool, self.in_ch, dims=1),
+            th.roll(col_pool, self.in_ch, dims=-1)
         ], dim=1).view(B, 3, 3, self.in_ch//3, H, W).transpose(1, 2).reshape(3*B, self.in_ch, H, W)
         return self.conv(roll_out).view(B, self.out_ch, H, W)
 
@@ -693,6 +727,25 @@ class ThreedAwareResBlock(ResBlock):
             nn.SiLU(),
             ThreedAwareConv(self.in_ch, self.out_ch, 3, padding=1),
         )
+        
+        # timestep projection
+        self.emb_layers = nn.Sequential(
+            nn.SiLU(),
+            linear(
+                self.tdim,
+                2 * self.out_ch if self.use_scale_shift_norm else self.out_ch,
+            ),
+        )
+
+        self.zemb_proj = nn.Sequential(
+            nn.SiLU(),
+            linear(
+                self.zdim,
+                self.out_ch
+                #2 * out_ch if use_scale_shift_norm else out_ch,
+            ),
+        )
+
 
         self.out_layers = nn.Sequential(
             normalization(self.out_ch),
@@ -703,12 +756,12 @@ class ThreedAwareResBlock(ResBlock):
             ),
         )
 
-        if self.out_ch == self.in_ch:
-            self.skip_connection = nn.Identity()
+        if self.out_ch != self.in_ch:
+            self.skip_connection = ThreedAwareConv(self.in_ch, self.out_ch, 1, padding=0)
         elif self.use_conv:
             self.skip_connection = ThreedAwareConv(self.in_ch, self.out_ch, 3, padding=1)
         else:
-            self.skip_connection = ThreedAwareConv(self.in_ch, self.out_ch, 1, padding=0)
+            self.skip_connection = nn.Identity()
 
 
 
@@ -736,9 +789,9 @@ class TriplaneUNetModel(UNetModel):
         time_embed_dim = self.model_channels * 4
 
 
-        ch = input_ch = 3 * int(self.channel_mult[0] * self.model_channels) # Triplane! -> Triple channels!!
+        ch = input_ch = int(self.channel_mult[0] * self.model_channels) # Triplane! -> Triple channels!!
         self.input_blocks = nn.ModuleList(
-            [EmbedSequential(conv_nd(2, 3 * self.model_channels, ch, 3, padding=1))]
+            [EmbedSequential(conv_nd(2, self.in_channels, ch, 3, padding=1))]
         )
         self._feature_size = ch
         input_block_chans = [ch]
@@ -750,14 +803,14 @@ class TriplaneUNetModel(UNetModel):
                         ds,
                         in_ch=ch,
                         tdim=time_embed_dim,
-                        zdim=time_embed_dim,
+                        zdim=self.latent_dim,
                         droprate=self.dropout,
-                        out_ch=3 * int(mult * self.model_channels), # Triplane! -> Triple channels!!
+                        out_ch=int(mult * self.model_channels), # Triplane! -> Triple channels!!
                         use_checkpoint=self.use_checkpoint,
                         use_scale_shift_norm=self.use_scale_shift_norm,
                     )
                 ]
-                ch = 3 * int(mult * self.model_channels) # Triplane! -> Triple channels!!
+                ch = int(mult * self.model_channels) # Triplane! -> Triple channels!!
                 if ds in self.attention_resolutions:
                     layers.append(
                         AttentionBlock(
@@ -779,7 +832,7 @@ class TriplaneUNetModel(UNetModel):
                             ds,
                             in_ch=ch,
                             tdim=time_embed_dim,
-                            zdim=time_embed_dim,
+                            zdim=self.latent_dim,
                             droprate=self.dropout,
                             out_ch=out_ch,
                             use_checkpoint=self.use_checkpoint,
@@ -803,7 +856,7 @@ class TriplaneUNetModel(UNetModel):
                 in_ch=ch,
                 out_ch=ch,
                 tdim=time_embed_dim,
-                zdim=time_embed_dim,
+                zdim=self.latent_dim,
                 droprate=self.dropout,
                 use_checkpoint=self.use_checkpoint,
                 use_scale_shift_norm=self.use_scale_shift_norm,
@@ -820,7 +873,7 @@ class TriplaneUNetModel(UNetModel):
                 in_ch=ch,
                 out_ch=ch,
                 tdim=time_embed_dim,
-                zdim=time_embed_dim,
+                zdim=self.latent_dim,
                 droprate=self.dropout,
                 use_checkpoint=self.use_checkpoint,
                 use_scale_shift_norm=self.use_scale_shift_norm,
@@ -836,15 +889,15 @@ class TriplaneUNetModel(UNetModel):
                     self.resblock(
                         ds,
                         in_ch=ch + ich,
-                        out_ch=3 * int(self.model_channels * mult),
+                        out_ch=int(self.model_channels * mult),
                         tdim=time_embed_dim,
-                        zdim=time_embed_dim,
+                        zdim=self.latent_dim,
                         droprate=self.dropout,
                         use_checkpoint=self.use_checkpoint,
                         use_scale_shift_norm=self.use_scale_shift_norm,
                     )
                 ]
-                ch = 3 * int(self.model_channels * mult)
+                ch = int(self.model_channels * mult)
                 if ds in self.attention_resolutions:
                     layers.append(
                         AttentionBlock(
@@ -863,7 +916,7 @@ class TriplaneUNetModel(UNetModel):
                             in_ch=ch,
                             out_ch=out_ch,
                             tdim=time_embed_dim,
-                            zdim=time_embed_dim,
+                            zdim=self.latent_dim,
                             droprate=self.dropout,
                             use_checkpoint=self.use_checkpoint,
                             use_scale_shift_norm=self.use_scale_shift_norm,
@@ -891,7 +944,7 @@ class TriplaneUNetModel(UNetModel):
 
 
 
-class SuperResModel(nn.Module):
+class TriplaneSuperResModel(nn.Module):
     """
     A Tri-plane Upsampler that performs super-resolution.
 
@@ -901,18 +954,20 @@ class SuperResModel(nn.Module):
     def __init__(self, opt):
         super().__init__()
 
-        assert opt.large_size % opt.small_size == 0 # Downsample from HR -> LR
+        assert opt.image_size % opt.small_size == 0 # Downsample from HR -> LR
 
-        self.large_size = opt.large_size
+        self.large_size = opt.image_size
         self.small_size = opt.small_size
+
+        self.dtype = th.float16 if opt.use_fp16 else th.float32
 
         from torchvision.transforms import Resize, InterpolationMode
         self.resizer = Resize(self.small_size, interpolation=InterpolationMode.BICUBIC)
 
-        time_embed_dim = opt.num_channels * 4
+        time_embed_dim = opt.model_channels * 4
 
         self.time_embed = nn.Sequential(
-            linear(opt.num_channels, time_embed_dim),
+            linear(opt.model_channels, time_embed_dim),
             nn.SiLU(),
             linear(time_embed_dim, time_embed_dim),
         )
@@ -923,10 +978,11 @@ class SuperResModel(nn.Module):
             linear(time_embed_dim, time_embed_dim),
         )
 
-        upsample_ratio = downsample_ratio = opt.large_size // opt.small_size
+        upsample_ratio = downsample_ratio = self.large_size // self.small_size
 
-        self.model_channels = opt.num_channels
-        self.in_channels = 3 * opt.num_channels  # Triplane! -> Triple channels!!
+        self.model_channels = opt.model_channels
+        self.in_channels = opt.in_channels  # Triplane! -> Triple channels!!
+        self.out_channels = opt.out_channels
         self.num_res_blocks = opt.num_res_blocks
         self.num_conv_per_resblock = opt.num_conv_per_resblock
         self.use_scale_shift_norm = opt.use_scale_shift_norm
@@ -962,7 +1018,7 @@ class SuperResModel(nn.Module):
             ))
             self.skip_connections.append(nn.Identity())
 
-        self.up_block = Upsample(ch, self.in_channels, 3, stride=upsample_ratio)
+        self.up_block = Upsample(ch, self.out_channels, 3, stride=upsample_ratio)
 
 
     def forward(self, x, timesteps, z=None, low_res=None, **kwargs):
@@ -973,7 +1029,12 @@ class SuperResModel(nn.Module):
         if z is not None:
             zemb = self.z_emb(z)
             assert len(temb.shape) == len(zemb.shape)
+        else:
+            zemb = None
 
+        x = x.type(self.dtype)
+        low_res = low_res.type(self.dtype)
+        
         x = self.down_block(x)
 
         x = th.cat([x, low_res], dim=1)
@@ -1002,21 +1063,20 @@ class SuperResModel(nn.Module):
             x = h + self.skip_connections[i](x)
 
         return self.up_block(x)
+    
+    def convert_to_fp16(self):
+        """
+        Convert the torso of the model to float16.
+        """
+        self.down_block.apply(convert_module_to_f16)
+        self.conv_blocks.apply(convert_module_to_f16)
+        self.up_block.apply(convert_module_to_f16)
 
-'''
-class SuperResModel(TriplaneUNetModel):
-"""
-A UNetModel that performs super-resolution.
+    def convert_to_fp32(self):
+        """
+        Convert the torso of the model to float32.
+        """
+        self.down_block.apply(convert_module_to_f32)
+        self.conv_blocks.apply(convert_module_to_f32)
+        self.up_block.apply(convert_module_to_f32)
 
-Expects an extra kwarg `low_res` to condition on a low-resolution image.
-"""
-
-def __init__(self, threedaware_resolutions, image_size, in_channels, *args, **kwargs):
-    super().__init__(threedaware_resolutions, image_size, in_channels * 2, *args, **kwargs)
-
-def forward(self, x, timesteps, z, low_res=None, **kwargs):
-    _, _, new_height, new_width = x.shape
-    upsampled = F.interpolate(low_res, (new_height, new_width), mode="bilinear")
-    x = th.cat([x, upsampled], dim=1)
-    return super().forward(x, timesteps, z, **kwargs)
-'''

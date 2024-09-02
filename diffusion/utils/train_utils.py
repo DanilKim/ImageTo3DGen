@@ -52,12 +52,12 @@ class Trainer:
         self.lr_anneal_steps = opt.lr_anneal_steps
 
         self.step = 0
-        self.resume_step = 0
         self.global_batch = self.batch_size * dist.get_world_size()
+        self.resume_step = 0
 
         self.sync_cuda = th.cuda.is_available()
-
         self._load_and_sync_parameters()
+
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,
             use_fp16=self.use_fp16,
@@ -67,6 +67,7 @@ class Trainer:
         self.opt = AdamW(
             self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay
         )
+
         if self.resume_step:
             self._load_optimizer_state()
             # Model was resumed, either due to a restart or a checkpoint
@@ -88,7 +89,7 @@ class Trainer:
                 output_device=dist_util.dev(),
                 broadcast_buffers=False,
                 bucket_cap_mb=128,
-                find_unused_parameters=False,
+                find_unused_parameters=True,
             )
         else:
             if dist.get_world_size() > 1:
@@ -104,13 +105,13 @@ class Trainer:
 
         if resume_checkpoint:
             self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
-            if dist.get_rank() == 0:
-                logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
-                self.model.load_state_dict(
-                    dist_util.load_state_dict(
-                        resume_checkpoint, map_location=dist_util.dev()
-                    )
+            #if dist.get_rank() == 0:
+            logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
+            self.model.load_state_dict(
+                dist_util.load_state_dict(
+                    resume_checkpoint, map_location=dist_util.dev()
                 )
+            )
 
         dist_util.sync_params(self.model.parameters())
 
@@ -119,13 +120,14 @@ class Trainer:
 
         main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
         ema_checkpoint = find_ema_checkpoint(main_checkpoint, self.resume_step, rate)
+        print(f'ema ckpt : {ema_checkpoint}')
         if ema_checkpoint:
-            if dist.get_rank() == 0:
-                logger.log(f"loading EMA from checkpoint: {ema_checkpoint}...")
-                state_dict = dist_util.load_state_dict(
-                    ema_checkpoint, map_location=dist_util.dev()
-                )
-                ema_params = self.mp_trainer.state_dict_to_master_params(state_dict)
+            #if dist.get_rank() == 0:
+            logger.log(f"loading EMA from checkpoint: {ema_checkpoint}...")
+            state_dict = dist_util.load_state_dict(
+                ema_checkpoint, map_location=dist_util.dev()
+            )
+            ema_params = self.mp_trainer.state_dict_to_master_params(state_dict)
 
         dist_util.sync_params(ema_params)
         return ema_params
@@ -135,6 +137,7 @@ class Trainer:
         opt_checkpoint = bf.join(
             bf.dirname(main_checkpoint), f"opt{self.resume_step:06}.pt"
         )
+        print(f'opt ckpt : {opt_checkpoint}')
         if bf.exists(opt_checkpoint):
             logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
             state_dict = dist_util.load_state_dict(
@@ -148,6 +151,7 @@ class Trainer:
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
             batch, cond = next(self.data)
+
             self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
@@ -173,6 +177,12 @@ class Trainer:
         self.mp_trainer.zero_grad()
         for i in range(0, batch.shape[0], self.microbatch):
             micro = batch[i : i + self.microbatch].to(dist_util.dev())
+            
+            noise = None
+            if 'noise' in cond:
+                noise = cond['noise'][i : i + self.microbatch].to(dist_util.dev())
+                del cond['noise']
+
             micro_cond = {
                 k: v[i : i + self.microbatch].to(dist_util.dev())
                 for k, v in cond.items()
@@ -185,7 +195,8 @@ class Trainer:
                 self.ddp_model,
                 micro,
                 t,
-                model_kwargs=micro_cond,
+                noise=noise,
+                model_kwargs=micro_cond
             )
 
             if last_batch or not self.use_ddp:
@@ -248,6 +259,7 @@ class Trainer:
         
         
     def sample(self, opt, logger):
+        
         all_images = []
         all_labels = []
         while len(all_images) * opt.batch_size < opt.num_samples:
@@ -294,6 +306,15 @@ class Trainer:
                 np.savez(out_path, arr, label_arr)
             else:
                 np.savez(out_path, arr)
+                
+            import cv2
+            import random
+            
+            vis = np.empty(shape=(arr.shape[1], arr.shape[2]*5, arr.shape[3]), dtype=np.uint8)
+            vis_inds = random.sample(range(arr.shape[0]), 5)
+            for i in range(5):
+                vis[:, arr.shape[2]*i: arr.shape[2]*(i+1), :] = arr[vis_inds[i]]
+            cv2.imwrite(os.path.join(logger.get_dir(), "vis.png"), cv2.cvtColor(vis, cv2.COLOR_BGR2RGB))
 
         dist.barrier()
         logger.log("sampling complete")
@@ -376,14 +397,14 @@ class Trainer:
         
         # if latent_dir path is specified, opt.num_samples is ignored
         num_samples = opt.num_samples
-        lr_img_dir = None if opt.lr_img_dir == '' else opt.lr_img_dir
-        if lr_img_dir is not None:
+        low_res_path = None if opt.low_res_path == '' else opt.low_res_path
+        if os.path.isdir(opt.low_res_path):
             from datasets.diffusion import ImageDataset, _list_image_files_recursively
             from itertools import cycle
             lr_img_loader = cycle(th.utils.data.DataLoader(
                 ImageDataset(
                     opt.small_size, 
-                    _list_image_files_recursively(lr_img_dir)
+                    _list_image_files_recursively(low_res_path)
                 ),
                 batch_size = opt.batch_size,
                 shuffle=False,
@@ -391,11 +412,23 @@ class Trainer:
                 drop_last=True
             ))
             num_samples = len(lr_img_loader)
+        elif os.path.splitext(opt.low_res_path)[-1] == '.npz':
+            lr_imgs = np.load(opt.low_res_path)['arr_0']
+            num_samples = lr_imgs.shape[0]
+        else:
+            print(
+                "[WARNING] The path for low resolution images does not exist, or type is not correct \n \
+                (should be either directory of image files, or single npz file) \n \
+                Random normal images will be used for upsample"
+            )
         
         while len(all_images) * opt.batch_size < num_samples:
             model_kwargs = {}
-            if lr_img_dir is not None:
+            if os.path.isdir(opt.low_res_path):
                 lr_img = next(lr_img_loader)
+            elif os.path.splitext(opt.low_res_path)[-1] == '.npz':
+                lr_img = lr_imgs[len(all_images) : min(len(all_images) * opt.batch_size, num_samples)]
+                lr_img = th.FloatTensor(lr_img).to(dist_util.dev())
             else:
                 lr_img = th.randn(size=(opt.batch_size, 3*opt.num_channels, opt.small_size, opt.small_size), device=dist_util.dev())
 

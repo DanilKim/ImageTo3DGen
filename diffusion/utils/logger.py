@@ -36,7 +36,7 @@ class SeqWriter(object):
 class HumanOutputFormat(KVWriter, SeqWriter):
     def __init__(self, filename_or_file):
         if isinstance(filename_or_file, str):
-            self.file = open(filename_or_file, "wt")
+            self.file = open(filename_or_file, "at")
             self.own_file = True
         else:
             assert hasattr(filename_or_file, "read"), (
@@ -492,3 +492,4 @@ def scoped_configure(dir=None, format_strs=None, comm=None):
     finally:
         Logger.CURRENT.close()
         Logger.CURRENT = prevlogger
+        

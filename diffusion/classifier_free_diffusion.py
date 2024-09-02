@@ -268,9 +268,12 @@ class GaussianDiffusion:
             z_shape = model_kwargs["z"].shape
             pred_eps_cond = model(x, self._scale_timesteps(t), **model_kwargs)
             
-            model_kwargs["z"] = th.zeros(z_shape, device=dist_util.dev())
-            pred_eps_uncond = model(x, t, **model_kwargs)
-            model_output = self.w * pred_eps_cond - ( 1 - self.w ) * pred_eps_uncond
+            if self.w == 1.0:
+                model_output = pred_eps_cond
+            else:
+                model_kwargs["z"] = th.zeros(z_shape, device=dist_util.dev())
+                pred_eps_uncond = model(x, t, **model_kwargs)
+                model_output = self.w * pred_eps_cond - ( 1 - self.w ) * pred_eps_uncond
         else:
             model_output = model(x, self._scale_timesteps(t), **model_kwargs)
         
@@ -448,6 +451,7 @@ class GaussianDiffusion:
             model_kwargs=model_kwargs,
         )
         noise = th.randn_like(x)
+        
         nonzero_mask = (
             (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
         )  # no noise when t == 0
@@ -530,7 +534,9 @@ class GaussianDiffusion:
         if noise is not None:
             img = noise
         else:
-            img = th.randn(*shape, device=device)
+            #img = th.randn(*shape, device=device)
+            #img[0] = th.zeros_like(img[0])
+            img = th.zeros(*shape, device=device)
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:
@@ -812,7 +818,6 @@ class GaussianDiffusion:
                     x_t=x_t,
                     t=t,
                     clip_denoised=False,
-                    model_kwargs=model_kwargs
                 )["output"]
                 if self.loss_type == LossType.RESCALED_MSE:
                     # Divide by 1000 for equivalence with initial implementation.

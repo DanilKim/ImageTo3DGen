@@ -111,3 +111,101 @@ class ImageEncoder(nn.Module):
         loss = spherical_dist_loss(image_z, img_ref_z)
 
         return loss
+
+
+
+if __name__ == '__main__':
+    """
+    Extract CLIP encodings for images
+    
+    ex) ${image_dir}/${image_fn}.png -> ${embed_dir}/${image_fn}.npy
+    """
+    import os
+    import sys
+    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+    
+    import argparse
+    import numpy as np
+    from PIL import Image
+    from datasets.utils import list_image_files_recursively
+    from torch.utils.data import DataLoader, Dataset
+    
+    from tqdm.auto import tqdm
+    
+    import pdb
+    
+    encoder = ImageEncoder("cuda", 'laion/CLIP-ViT-B-32-laion2B-s34B-b79K')
+    
+    #pdb.set_trace()
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-i', '--image', type=str, required=True)
+    parser.add_argument('-e', '--embed', type=str, default='')
+    parser.add_argument('-b', '--batch_size', type=int, default=16)
+    args = parser.parse_args()
+    
+    if args.embed == '':
+        args.embed = '/'.join(args.image.split('/')[:-1].append('CLIP_embeds'))
+    os.makedirs(args.embed, exist_ok=True)
+    
+    image_list = list_image_files_recursively(args.image)
+    toTensor = T.ToTensor()
+    
+    
+    class ImageDataset(Dataset):
+        def __init__(self, img_dir, emb_dir):
+            super().__init__()
+            self.img_dir = img_dir
+            self.image_list = list_image_files_recursively(img_dir)
+            self.emb_dir = emb_dir
+
+        def __len__(self):
+            return len(self.image_list)
+
+        def __getitem__(self, idx):
+            img_fn = self.image_list[idx]
+            pil_image = Image.open(img_fn)
+            pil_image = pil_image.convert("RGB")
+            arr = np.array(pil_image) / 255.
+            
+            save_path = os.path.join(self.emb_dir, os.path.relpath(img_fn, self.img_dir))
+            save_path = save_path[:-4] + '.npy'
+            return np.transpose(arr, [2, 0, 1]), save_path
+        
+    dataset = ImageDataset(args.image, args.embed)
+    
+    loader = DataLoader(
+        dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, drop_last=False
+    )
+
+    for i, batch in tqdm(enumerate(loader)):
+        img_arr, path_arr = batch
+        
+        with torch.no_grad():
+            embeds = encoder.get_img_embeds(img_arr.float().cuda())
+        
+        for embed, save_path in zip(embeds, path_arr):
+            if os.path.exists(save_path):
+                continue
+            np.save(save_path, embed.cpu().numpy())
+
+    '''
+    for i, img_fn in tqdm(enumerate(image_list)):
+        save_path = os.path.join(args.embed, os.path.relpath(img_fn, args.image))
+        save_path = save_path[:-4] + '.npy'
+        if os.path.exists(save_path):
+            continue
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
+        pil_image = Image.open(img_fn)
+        pil_image = pil_image.convert("RGB")
+        image = toTensor(pil_image)[None,:].to("cuda")
+        
+        with torch.no_grad():
+            embed = encoder.get_img_embeds(image)
+        
+        np.save(save_path, embed[0].cpu().numpy())
+        
+        if i % 50 == 0:
+            print(f'[{i+1} / {len(image_list)}] saved...')
+    '''

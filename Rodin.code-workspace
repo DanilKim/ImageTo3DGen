@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../datasets/triplane_data/panic/toy"
+		}
+	],
+	"settings": {}
+}

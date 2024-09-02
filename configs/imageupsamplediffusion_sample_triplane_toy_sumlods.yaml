@@ -1,0 +1,62 @@
+# train setting
+train: False
+data_dir: '/disk2/datasets/triplane_data/panic/toy/LOD=4_EPOCH=20_OBJ=8/sumlod'
+latent_dir: ''
+schedule_sampler: uniform
+lr: 5.0e-5
+weight_decay: 0.0
+lr_anneal_steps: 0
+batch_size: 8  # train batch size
+microbatch: -1  # -1 disables microbatches
+bound: '-1.0,1.0'
+ema_rate: 0.9999  # comma-separated list of EMA values
+log_interval: 200
+save_interval: 20000
+resume_checkpoint: ''
+use_fp16: True
+fp16_scale_growth: 1.0e-3
+
+# sampling setting 
+clip_denoised: True
+num_samples: 8 # 10000
+batch_size: 8 # sample batch size
+use_ddim: False
+model_path: '/disk2/workspace/Rodin/log/imageupsamplediffusion_triplane_toy_sumlods/tmax-2023-12-05-08-35-15-207784/model040000.pt'
+latent_dir: ''
+low_res_path: '/disk2/workspace/Rodin/log/basediffusion/latent_sumlods_downsampled_64x64_bs8_bound1_gs1.0/140k,ts1000/samples_8x64x64x96_step140000.npz'
+#low_res_path: '/disk2/datasets/triplane_data/panic/toy/LOD=4_EPOCH=20_OBJ=8/sumlod_64_xyz.npz'
+progress: True
+
+# diffusion default 
+learn_sigma: True
+#sigma_small: False
+diffusion_steps: 100 # 100
+noise_schedule: 'linear'
+timestep_respacing: ''
+use_kl: False
+predict_xstart: True
+rescale_timesteps: False
+rescale_learned_sigmas: False
+guidance_strength: 1.0 # Only for sampling??
+
+# model default
+image_size: 256 # == large size
+small_size: 64
+in_channels: 96
+out_channels: 96
+latent_dim: 512
+model_channels: 192
+num_res_blocks: 2
+num_conv_per_resblock: 3
+num_heads: 4
+num_heads_upsample: -1
+num_head_channels: -1
+attention_resolutions: '32,16,8'
+channel_mult: ''
+dropout: 0.0
+class_cond: False # True
+use_checkpoint: False
+use_scale_shift_norm: True
+resblock_updown: True
+use_fp16: True
+use_new_attention_order: False

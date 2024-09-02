@@ -1,6 +1,7 @@
 import os
 import glob
 import tqdm
+import math
 import imageio
 import random
 import tensorboardX
@@ -28,99 +29,7 @@ from torch_efficient_distloss import eff_distloss
 
 from kornia.filters import gaussian_blur2d
 
-from packaging import version as pver
-
-
-def visualize_depth(depth, cmap=cv2.COLORMAP_JET):
-    """
-    depth: (H, W)
-    """
-    x = depth.cpu().numpy()
-    x = np.nan_to_num(x) # change nan to 0
-    mi = np.min(x) # get minimum depth
-    ma = np.max(x)
-    x = (x-mi)/(ma-mi+1e-8) # normalize to 0~1
-    x = (255*x).astype(np.uint8)
-    x_ = Image.fromarray(cv2.applyColorMap(x, cmap))
-    x_ = T.ToTensor()(x_) # (3, H, W)
-    return x_
-
-def custom_meshgrid(*args):
-    # ref: https://pytorch.org/docs/stable/generated/torch.meshgrid.html?highlight=meshgrid#torch.meshgrid
-    if pver.parse(torch.__version__) < pver.parse('1.10'):
-        return torch.meshgrid(*args)
-    else:
-        return torch.meshgrid(*args, indexing='ij')
-
-def safe_normalize(x, eps=1e-20):
-    return x / torch.sqrt(torch.clamp(torch.sum(x * x, -1, keepdim=True), min=eps))
-
-@torch.cuda.amp.autocast(enabled=False)
-def get_rays(poses, intrinsics, H, W, N=-1, error_map=None):
-    ''' get rays
-    Args:
-        poses: [B, 4, 4], cam2world
-        intrinsics: [4]
-        H, W, N: int
-        error_map: [B, 128 * 128], sample probability based on training error
-    Returns:
-        rays_o, rays_d: [B, N, 3]
-        inds: [B, N]
-    '''
-
-    device = poses.device
-    B = poses.shape[0]
-    fx, fy, cx, cy = intrinsics
-
-    i, j = custom_meshgrid(torch.linspace(0, W-1, W, device=device), torch.linspace(0, H-1, H, device=device))
-    i = i.t().reshape([1, H*W]).expand([B, H*W]) + 0.5
-    j = j.t().reshape([1, H*W]).expand([B, H*W]) + 0.5
-
-    results = {}
-
-    if N > 0:
-        N = min(N, H*W)
-
-        if error_map is None:
-            inds = torch.randint(0, H*W, size=[N], device=device) # may duplicate
-            inds = inds.expand([B, N])
-        else:
-
-            # weighted sample on a low-reso grid
-            inds_coarse = torch.multinomial(error_map.to(device), N, replacement=False) # [B, N], but in [0, 128*128)
-
-            # map to the original resolution with random perturb.
-            inds_x, inds_y = inds_coarse // 128, inds_coarse % 128 # `//` will throw a warning in torch 1.10... anyway.
-            sx, sy = H / 128, W / 128
-            inds_x = (inds_x * sx + torch.rand(B, N, device=device) * sx).long().clamp(max=H - 1)
-            inds_y = (inds_y * sy + torch.rand(B, N, device=device) * sy).long().clamp(max=W - 1)
-            inds = inds_x * W + inds_y
-
-            results['inds_coarse'] = inds_coarse # need this when updating error_map
-
-        i = torch.gather(i, -1, inds)
-        j = torch.gather(j, -1, inds)
-
-        results['inds'] = inds
-
-    else:
-        inds = torch.arange(H*W, device=device).expand([B, H*W])
-
-    zs = torch.ones_like(i)
-    xs = (i - cx) / fx * zs
-    ys = (j - cy) / fy * zs
-    directions = torch.stack((xs, ys, zs), dim=-1)
-    # directions = safe_normalize(directions)
-    rays_d = directions @ poses[:, :3, :3].transpose(-1, -2) # (B, N, 3)
-
-    rays_o = poses[..., :3, 3] # [B, 3]
-    rays_o = rays_o[..., None, :].expand_as(rays_d) # [B, N, 3]
-
-    results['rays_o'] = rays_o
-    results['rays_d'] = rays_d
-
-    return results
-
+import pdb
 
 def seed_everything(seed):
     random.seed(seed)
@@ -132,45 +41,13 @@ def seed_everything(seed):
     #torch.backends.cudnn.benchmark = True
 
 
-def torch_vis_2d(x, renormalize=False):
-    # x: [3, H, W] or [1, H, W] or [H, W]
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import torch
-    
-    if isinstance(x, torch.Tensor):
-        if len(x.shape) == 3:
-            x = x.permute(1,2,0).squeeze()
-        x = x.detach().cpu().numpy()
-        
-    print(f'[torch_vis_2d] {x.shape}, {x.dtype}, {x.min()} ~ {x.max()}')
-    
-    x = x.astype(np.float32)
-    
-    # renormalize
-    if renormalize:
-        x = (x - x.min(axis=0, keepdims=True)) / (x.max(axis=0, keepdims=True) - x.min(axis=0, keepdims=True) + 1e-8)
-
-    plt.imshow(x)
-    plt.show()
-
-@torch.jit.script
-def linear_to_srgb(x):
-    return torch.where(x < 0.0031308, 12.92 * x, 1.055 * x ** 0.41666 - 0.055)
-
-
-@torch.jit.script
-def srgb_to_linear(x):
-    return torch.where(x < 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
-
-
 class Trainer(object):
     def __init__(self, 
             name, # name of this experiment
             opt, # extra conf
             model, # network 
-            optimizer, # optimizer
-            lr_scheduler, # scheduler
+            optimizer=None, # optimizer
+            lr_scheduler=None, # scheduler
             criterion=nn.MSELoss(), # loss function, if None, assume inline implementation in train_step
             ema_decay=None, # if use EMA, set the decay
             metrics=[], # metrics for evaluation, if None, use val_loss to measure performance, else use the first metric.
@@ -313,7 +190,7 @@ class Trainer(object):
         rays_o = data['rays_o'].to(self.device) # [B, N, 3]
         rays_d = data['rays_d'].to(self.device) # [B, N, 3]
         
-        image = data['image'].to(self.device) # [B, 3, W, H]
+        image = data['image'].to(self.device) # [B, N, 3]
         poses = data['poses'].to(self.device) # [B, 4, 4]
         fov = data['fov']
 
@@ -334,12 +211,14 @@ class Trainer(object):
                 l_p = torch.zeros(3, device=rays_o.device, dtype=torch.float)
             else:
                 # re-sample pose for normal (low resolution)
-                focal_x = self.opt.normal_shape / (2 * np.tan(fov[:,0] / 2))
-                focal_y = self.opt.normal_shape / (2 * np.tan(fov[:,1] / 2))
-                intrinsics = np.array([focal_x, focal_y, self.opt.normal_shape / 2, self.opt.normal_shape / 2])
-                rays = get_rays(poses, intrinsics, self.opt.normal_shape, self.opt.normal_shape, -1)
-                rays_o = rays['rays_o'].cuda() # [B, N, 3]
-                rays_d = rays['rays_d'].cuda() # [B, N, 3]
+                focal_x = self.opt.normal_shape / (2 * torch.tan(fov[:,0] / 2))
+                focal_y = self.opt.normal_shape / (2 * torch.tan(fov[:,1] / 2))
+                normal_shape = torch.ones(B) * self.opt.normal_shape / 2
+                intrinsics = torch.stack([focal_x, focal_y, normal_shape, normal_shape], dim=1).to(self.device)
+                #intrinsics = np.array([focal_x, focal_y, self.opt.normal_shape / 2, self.opt.normal_shape / 2])
+                rays = get_rays(poses, intrinsics, self.opt.normal_shape, self.opt.normal_shape, self.opt.num_rays_per_image)
+                rays_o = rays['rays_o'].to(self.device) # [B, N, 3]
+                rays_d = rays['rays_d'].to(self.device) # [B, N, 3]
 
                 H, W = self.opt.normal_shape, self.opt.normal_shape
                 # shading is on
@@ -353,7 +232,7 @@ class Trainer(object):
                     ambient_ratio = 0
 
 
-        bg_color = torch.rand((B * N, 3), device=rays_o.device) # pixel-wise random
+        bg_color = None #torch.rand((B, N, 3), device=rays_o.device) # pixel-wise random
 
         # original light_d is None
         light_d = None
@@ -364,16 +243,14 @@ class Trainer(object):
         else:
             raise NotImplementedError("data should contain either [ learnable triplane subject idex || loaded triplane ]")
         
-        bg_color = torch.rand((B * N, 3), device=rays_o.device) # pixel-wise random
-
-        #pred_rgb = outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous() # [1, 3, H, W]
-        #pred_depth = outputs['depth'].reshape(B, H, W, 1).permute(0, 3, 1, 2).contiguous()
-
+        pred_rgb = outputs['image'] # [B, N, 3] # outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous() # [1, 3, H, W]
+        pred_depth = outputs['depth'] # [B, N] # outputs['depth'].reshape(B, H, W, 1).permute(0, 3, 1, 2).contiguous()    
         
         loss = 0
         ww = {}
         
         # MSE loss
+
         loss_mse = self.criterion(pred_rgb, image)
         loss = loss + loss_mse
         
@@ -384,12 +261,12 @@ class Trainer(object):
         #loss = loss + loss_perceptual * self.opt.lambda_perceptual
 
         # occupancy loss
-        pred_ws = outputs['weights_sum'].reshape(B, 1, H, W)
+        pred_ws = outputs['weights_sum'].unsqueeze(-1) # [B, N, 1]
 
         if (np.random.random() < self.opt.p_randbg and shading != 'textureless'):
             # use rand bg
-            bg_color = torch.ones_like(pred_rgb) * (torch.rand((B, 3, 1, 1), device=rays_o.device) * 0.6 + 0.2)
-            pred_rgb = pred_rgb * pred_ws + bg_color * (1 - pred_ws)
+            bg_color = torch.ones_like(pred_rgb) * (torch.rand((B, 3, 1), device=rays_o.device) * 0.6 + 0.2)
+            pred_rgb = pred_rgb * pred_ws + bg_color * (1 - pred_ws) # [B, N, 3]
 
 
         if self.epoch > self.opt.warmup_epoch:
@@ -430,7 +307,7 @@ class Trainer(object):
                 loss = loss + self.opt.lambda_blur * loss_blur
 
 
-        if self.global_step % 10 == 0:
+        if False: #self.global_step % 10 == 0:
             pred_depth = outputs['depth'].reshape(B, H, W, 1).permute(0, 3, 1, 2).contiguous()
             with torch.no_grad():
                 im = pred_rgb
@@ -443,7 +320,7 @@ class Trainer(object):
         idx = outputs['weights_sum'] > 1e-4
         loss_distortion = eff_distloss(outputs['weights'][idx], outputs['midpoint'][idx], outputs['deltas'][idx])
         loss_smoothness = F.l1_loss(outputs['sigmas'], outputs['sigmas_perturbed'])
-        loss_sparsity = torch.norm(outputs['weights_sum'], p=1)
+        loss_sparsity = torch.norm(outputs['weights_sum'], p=1) / (B * N)
         
         ww['distortion'] = loss_distortion.item()
         ww['smoothness'] = loss_smoothness.item()
@@ -453,7 +330,7 @@ class Trainer(object):
             + loss_distortion * self.opt.lambda_dist \
             + loss_smoothness * self.opt.lambda_smooth \
             + loss_sparsity * self.opt.lambda_sparse
-            
+        
 
         return pred_rgb, ww, loss
 
@@ -486,15 +363,15 @@ class Trainer(object):
         # loss = self.opt.lambda_entropy * loss_entropy
         loss = torch.zeros([1], device=pred_rgb.device, dtype=pred_rgb.dtype)
 
-
         return pred_rgb, pred_depth, loss
 
     def test_step(self, data, bg_color=None, perturb=False):  
-        rays_o = data['rays_o'] # [B, N, 3]
-        rays_d = data['rays_d'] # [B, N, 3]
+        rays_o = data['rays_o'].to(self.device) # [B, N, 3]
+        rays_d = data['rays_d'].to(self.device) # [B, N, 3]
 
         B, N = rays_o.shape[:2]
         H, W = data['H'], data['W']
+        assert N == H * W
 
         if bg_color is not None:
             bg_color = bg_color.to(rays_o.device)
@@ -504,8 +381,8 @@ class Trainer(object):
         shading = data['shading'] if 'shading' in data else 'albedo'
         ambient_ratio = data['ambient_ratio'] if 'ambient_ratio' in data else 1.0
         light_d = data['light_d'] if 'light_d' in data else None
-
-        outputs = self.model.render(rays_o, rays_d, staged=True, perturb=perturb, light_d=light_d, ambient_ratio=ambient_ratio, shading=shading, force_all_rays=True, bg_color=bg_color, **vars(self.opt))
+        
+        outputs = self.model.render(data['subject_idx'].to(self.device), rays_o, rays_d, staged=True, perturb=perturb, light_d=light_d, ambient_ratio=ambient_ratio, shading=shading, force_all_rays=True, bg_color=bg_color, **vars(self.opt))
 
         pred_rgb = outputs['image'].reshape(B, H, W, 3)
         pred_depth = outputs['depth'].reshape(B, H, W)
@@ -529,7 +406,7 @@ class Trainer(object):
         
     
     def save_triplane(self, subject_list, save_path=None):
-        assert len(subject_list) == len(self.model.triplane_features), \
+        assert len(subject_list) == self.model.triplane_features.num_embeddings, \
             "length of subject list & triplane feature number should match!!"
     
         if save_path is None:
@@ -540,10 +417,13 @@ class Trainer(object):
         os.makedirs(save_path, exist_ok=True)
         
         dim, size = self.opt.feature_dim, self.opt.feature_size
-        for idx, triplane in enumerate(self.model.triplane_features):
-            subject = subject_list[idx]
-            print(f'[{idx+1}/{len(subject_list)}] Saving to {save_path}/{subject}.npy')
-            np.save(f'{save_path}/{subject}.npy', triplane.weight.detach().numpy().reshape(3, dim, size, size))
+        for i, subject in enumerate(subject_list):
+            np.save(f'{save_path}/{subject}.npy', self.model.triplane_features.weight[i].detach().cpu().numpy().reshape(3, dim, size, size))
+        
+        #for idx, triplane in enumerate(self.model.triplane_features):
+        #    subject = subject_list[idx]
+        #    print(f'[{idx+1}/{len(subject_list)}] Saving to {save_path}/{subject}.npy')
+        #    np.save(f'{save_path}/{subject}.npy', triplane.weight.detach().numpy().reshape(3, dim, size, size))
 
     ### ------------------------------
 
@@ -564,7 +444,7 @@ class Trainer(object):
                 
                 # Save learned triplanes if triplane fitting mode
                 if hasattr(self.model, 'triplane_features'):
-                    self.save_triplane(train_loader.dataset.subjects, self.workspace)
+                    self.save_triplane(train_loader._data.subjects, self.workspace)
 
             if valid_loader is not None:
                 if self.epoch % self.eval_interval == 0:
@@ -696,6 +576,7 @@ class Trainer(object):
 
                 if self.scheduler_update_every_step:
                     pbar.set_description(f"loss={loss_val:.4f} ({total_loss/self.local_step:.4f}), lr={self.optimizer.param_groups[0]['lr']:.6f}")
+                    #pbar.set_description(f"loss={loss_val:.4f} (mes={ww['mse']:.4f} / dist={ww['distortion']:.3f} / smooth={ww['smoothness']:.3f} / sparse={ww['sparsity']:.3f} avg ({total_loss/self.local_step:.4f}), lr={self.optimizer.param_groups[0]['lr']:.6f}")
                 else:
                     pbar.set_description(f"loss={loss_val:.4f} ({total_loss/self.local_step:.4f})")
                 pbar.update(loader.batch_size)

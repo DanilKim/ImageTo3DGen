@@ -1,0 +1,64 @@
+# train setting
+train: False
+data_dir: ''
+schedule_sampler: uniform
+lr: 3.0e-4
+weight_decay: 0.05
+microbatch: -1  # -1 disables microbatches
+ema_rate: 0.9999  # comma-separated list of EMA values
+
+# sampling setting 
+clip_denoised: True
+num_samples: 32 # 10000
+batch_size: 16 # sample batch size
+use_ddim: False
+# model_path: '/disk2/workspace/Rodin/log/imagediffusion_train/tmax-2023-08-15-07-16-22-986176/model080000.pt'
+model_path: '/disk2/workspace/Rodin/log/imagediffusion_train/tmax-2023-08-07-00-51-35-706383/model1010000.pt'
+# model_path: '/disk2/workspace/Rodin/pretrained/guided-diffusion/64x64_diffusion.pt'
+# model_path: '/disk2/workspace/guided-diffusion/log/in_64_uncond_290k/model290000.pt'
+# model_path: '/disk2/workspace/Rodin/pretrained/guided-diffusion/256x256_diffusion_uncond.pt'
+latent_dir: ''
+progress: True
+
+# diffusion default 
+learn_sigma: True
+sigma_small: False
+diffusion_steps: 1000
+noise_schedule: 'cosine'
+timestep_respacing: '250'
+use_kl: False
+predict_xstart: False
+rescale_timesteps: False
+rescale_learned_sigmas: False
+guidance_strength: 1.0
+
+# model default
+image_size: 64
+in_channels: 3
+out_channels: 3
+latent_dim: 768 #512
+model_channels: 192
+num_res_blocks: 3
+num_heads: 4
+num_heads_upsample: -1
+num_head_channels: 64
+attention_resolutions: '32,16,8'
+channel_mult: ''
+dropout: 0.1
+class_cond: False
+use_checkpoint: False
+use_scale_shift_norm: True
+resblock_updown: True
+use_fp16: True
+fp16_scale_growth: 1.0e-3
+use_new_attention_order: True
+
+
+# classifier
+#classifier_depth: 4
+#classifier_width: 128
+#classifier_pool: attention
+#classifier_resblock_updown: True
+#classifier_use_scale_shift_norm: True
+#classifier_use_fp16: False
+#classifier_attention_resolutions: '32,16,8'

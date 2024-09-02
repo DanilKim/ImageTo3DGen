@@ -1,0 +1,59 @@
+# train setting
+train: True
+data_dir: '/disk2/datasets/image_data/ffhq-dataset/images64x64' # '/disk2/datasets/image_data/imagenet_64x64_train'
+latent_dir: '/disk2/datasets/image_data/ffhq-dataset/clip_64' # ''
+schedule_sampler: uniform
+lr: 1.0e-4 # 3.0e-4
+weight_decay: 0.05
+microbatch: -1  # -1 disables microbatches
+ema_rate: 0.9999  # comma-separated list of EMA values
+resume_checkpoint: '' #/disk2/workspace/Rodin/log/imagediffusion_train_ffhq64_latent/tmax-2023-08-16-05-39-05-734192/model010000.pt' 
+batch_size: 128 # training batch size
+log_interval: 200
+save_interval: 10000
+
+
+# diffusion default 
+learn_sigma: False
+sigma_small: False
+diffusion_steps: 1000
+noise_schedule: 'linear'
+timestep_respacing: '1000'
+use_kl: False
+predict_xstart: False
+rescale_timesteps: False
+rescale_learned_sigmas: False
+guidance_strength: 1.0 # Only for sampling??
+
+# model default
+image_size: 64
+in_channels: 3
+out_channels: 3
+latent_dim: 512 #768
+model_channels: 64 #192
+num_res_blocks: 2 #3
+num_heads: 1 #4
+num_heads_upsample: -1
+num_head_channels: -1 #64
+attention_resolutions: '16' #'32,16,8'
+channel_mult: '1,2,4,8' #''
+dropout: 0.1
+class_cond: False
+use_checkpoint: False
+use_scale_shift_norm: True
+resblock_updown: True
+use_fp16: True
+fp16_scale_growth: 1.0e-3
+use_new_attention_order: False
+
+# classifier
+#anneal_lr: True 
+lr_anneal_steps: 0
+#iterations: 300000
+#classifier_depth: 4
+#classifier_width: 128
+#classifier_pool: attention
+#classifier_resblock_updown: True
+#classifier_use_scale_shift_norm: True
+#classifier_use_fp16: False
+#classifier_attention_resolutions: '32,16,8'

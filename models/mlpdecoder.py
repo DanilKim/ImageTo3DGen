@@ -8,10 +8,10 @@ import torch.nn.functional as F
 
 from nerf.renderer import NeRFRenderer
 
-import numpy as np
-
 from nerf.general_utils import safe_normalize, sample_pdf
 from nerf import raymarching
+
+import pdb
 
 
 # TODO: not sure about the details...
@@ -121,7 +121,7 @@ class MLPDecoder(NeRFRenderer):
         
         self.fourier_transform = FourierFeatureTransform(self.input_triplane_dim, 2 * self.input_triplane_dim, scale=1) # -> 4 * self.input_triplane_dim
         self.common_net = MLP(4 * self.input_triplane_dim, hidden_dim, hidden_dim, 2, bias=True)
-        self.sigma_net = MLP(hidden_dim, 1, hidden_dim, 1, bias=True)
+        self.sigma_net = nn.Linear(hidden_dim, 1, bias=True) #MLP(hidden_dim, 1, hidden_dim, 1, bias=True)
         self.bg_net = MLP(hidden_dim + self.input_view_dim, 3, hidden_dim, num_bg_layers+1, bias=True)
 
         self.smooth_reg_p_dist = 0.004
@@ -130,10 +130,10 @@ class MLPDecoder(NeRFRenderer):
         # coords 2d : [B, N, 2]
         # plane : [B, C, H, W]
         assert len(coords2d.shape) == 3, coords2d.shape 
-
         sampled_features = F.grid_sample(plane,
                                          coords2d.reshape(coords2d.shape[0], 1, -1, coords2d.shape[-1]), # [B, 1, N, 2]
                                          mode='bilinear', padding_mode='zeros', align_corners=True)
+
         B, C, H, W = sampled_features.shape # H*W = N
         sampled_features = sampled_features.reshape(B, C, H*W).permute(0, 2, 1) # [B, N, C]
         return sampled_features
@@ -149,40 +149,41 @@ class MLPDecoder(NeRFRenderer):
         return g
     
     
-    def density(self, x, triplane_feat, aggregate='sum'):
-        # x : [B, N, T, 3] in [-bound, bound]
+    def density(self, x, triplane_feat, get_normal=False, aggregate='sum'):
+        # x : [B, N, 3] in [-bound, bound]
         # featrures : [B, 3, C==32, H, W]
         
-        xy_embed = self.sample_plane(x[None,..., 0:2].contiguous(), triplane_feat[:,0]) # ([B, N, 2], [B, C==32, H, W]) -> [B, N, C==32]
-        yz_embed = self.sample_plane(x[None,..., 1:3].contiguous(), triplane_feat[:,1])
-        xz_embed = self.sample_plane(x[None,..., :3:2].contiguous(), triplane_feat[:,2])
-        
+        xy_embed = self.sample_plane(x[..., 0:2].contiguous(), triplane_feat[:,0]) # ([B, N, 2], [B, C==32, H, W]) -> [B, N, C==32]
+        yz_embed = self.sample_plane(x[..., 1:3].contiguous(), triplane_feat[:,1])
+        xz_embed = self.sample_plane(x[..., :3:2].contiguous(), triplane_feat[:,2])
+
         # aggregate - product or sum?
         if aggregate == 'sum':
             features = torch.sum(torch.stack([xy_embed, yz_embed, xz_embed]), dim=0) # [B, N, C]
         else:
             features = torch.prod(torch.stack([xy_embed, yz_embed, xz_embed]), dim=0) # [B, N, C]
         feat = self.fourier_transform(features) # [B, N, 4*C == 128]
+            
         feat = self.common_net(feat) # [B, N, hidden_dim == 128]
         out = self.sigma_net(feat) # [B, N, 1]
         
         sigma = F.softplus(out)  # F.softplus(feat[..., 0] + self.density_blob(x)) # [B, N, 1]
-        
+
         return {
-            'sigma': sigma,  # [B, N, 1]
-            'feat': feat     # [B, N, hidden_dim]
+            'sigma': torch.nan_to_num(sigma),   # [B, N, 1]
+            'feat': torch.nan_to_num(feat),     # [B, N, hidden_dim]
         }
     
     
     def color(self, d, features):
         # d : [B, N, 3], view direction, normalized in [-1, 1]
         # features : [B, N, D] mlp intermediate feature
-        
+
         x = torch.cat([features, d], dim=-1) # [B, N, D+3]
         out = self.bg_net(x)                    # [B, N, 3]
         color = torch.sigmoid(out)              # [B, N, 3]
         
-        return color
+        return torch.nan_to_num(color)
     
     
     def forward(self, x, d, triplane_feat, l=None, ratio=1, shading='albedo', l_p=None, l_a=None):
@@ -190,7 +191,6 @@ class MLPDecoder(NeRFRenderer):
         # d : [B, N, 3], view direction, normalized in [-1, 1]
         # triplane_feat : [B, 3, 32, 256, 256]
         # l : [B, 3]
-        
         if shading == 'albedo':
             density_output = self.density(x, triplane_feat)
             sigma = density_output['sigma']                  # [B, N, 1]
@@ -205,21 +205,20 @@ class MLPDecoder(NeRFRenderer):
                 # query gradient
                 normal = - torch.autograd.grad(torch.sum(sigma), x, create_graph=True)[0] # [B, N, 3]
             normal = safe_normalize(normal) # [B, N, 3]
-            # normal = torch.nan_to_num(normal)
-            # normal = normal.detach()
+            normal = torch.nan_to_num(normal)
+            normal = normal.detach()
 
             # lambertian shading
             lambertian = ratio + (1 - ratio) * (normal @ l.unsqueeze(-1)).clamp(min=0) # [B, N, 1]
 
             if shading == 'textureless':
-                color = lambertian.unsqueeze(-1).repeat(1, 3)
+                color = lambertian.repeat(1, 1, 3)
             elif shading == 'normal':
                 color = (normal + 1) / 2
             else: # 'lambertian'
-                color = albedo * lambertian.unsqueeze(-1)
+                color = albedo * lambertian
         
         # normal
-        
         return sigma, color, normal # [B, N, 1], [B, N, 3], [B, N, 3]
 
         
@@ -239,21 +238,21 @@ class MLPDecoder(NeRFRenderer):
     def run(self, triplane_feat, rays_o, rays_d, num_steps=128, upsample_steps=128, light_d=None, ambient_ratio=1.0, shading='albedo', bg_color=None, perturb=False, **kwargs):
         # triplane_feat : [B, 3, 32, 256, 256]
         # rays_o, rays_d: [B, N, 3], assumes B == 1
-        # bg_color: [BN, 3] in range [0, 1]
+        # bg_color: [B, N, 3] in range [0, 1]
         # return: image: [B, N, 3], depth: [B, N]
 
         prefix = rays_o.shape[:-1] # (B, N)
         rays_o = rays_o.contiguous() #.view(-1, 3)
         rays_d = rays_d.contiguous() #.view(-1, 3)
 
-        B, N = rays_o.shape[:1] # N = B * N, in fact
+        B, N = rays_o.shape[:2] # N = B * N, in fact
         device = rays_o.device
 
         results = {}
 
         # choose aabb
         aabb = self.aabb_train if self.training else self.aabb_infer
-
+        
         # sample steps
         nears, fars = raymarching.near_far_from_aabb(rays_o, rays_d, aabb, self.min_near)
         nears = nears.view(B,N,-1)  # [B, N, 1]
@@ -304,7 +303,7 @@ class MLPDecoder(NeRFRenderer):
 
                 # sample new z_vals
                 z_vals_mid = (z_vals[..., :-1] + 0.5 * deltas[..., :-1]) # [B, N, T-1]
-                new_z_vals = sample_pdf(z_vals_mid, weights[:, 1:-1], upsample_steps, det=not self.training).detach() # [B, N, t]
+                new_z_vals = sample_pdf(z_vals_mid, weights[..., 1:-1], upsample_steps, det=not self.training).detach() # [B, N, t]
 
                 new_xyzs = rays_o.unsqueeze(-2) + rays_d.unsqueeze(-2) * new_z_vals.unsqueeze(-1) # [B, N, 1, 3] * [B, N, t, 1] -> [B, N, t, 3]
                 new_xyzs = torch.min(torch.max(new_xyzs, aabb[:3]), aabb[3:]) # [B, N, t, 3] a manual clip. 
@@ -323,7 +322,7 @@ class MLPDecoder(NeRFRenderer):
             xyzs = torch.gather(xyzs, dim=-2, index=z_index.unsqueeze(-1).expand_as(xyzs)) # [B, N, T+t, 3]
 
             for k in density_outputs:
-                tmp_output = torch.cat([density_outputs[k], new_density_outputs[k]], dim=1)
+                tmp_output = torch.cat([density_outputs[k], new_density_outputs[k]], dim=-2)
                 density_outputs[k] = torch.gather(tmp_output, dim=-2, index=z_index.unsqueeze(-1).expand_as(tmp_output))
                 # [B, N, T+t, 1] & [B, N, T+t, hidden_dim==128]
                 
@@ -347,7 +346,7 @@ class MLPDecoder(NeRFRenderer):
         # smoothness regularization loss
         if self.training:
             xyzs_perturbed = xyzs + torch.randn_like(xyzs) * self.smooth_reg_p_dist
-            results['sigmas_perturbed'] = self.density(xyzs_perturbed, triplane_feat)['sigma']        
+            results['sigmas_perturbed'] = self.density(xyzs_perturbed.reshape(B, -1, 3), triplane_feat)['sigma']        
         
         rgbs = rgbs.view(B, N, -1, 3) # [B, N, T+t, 3]
 
@@ -385,7 +384,7 @@ class MLPDecoder(NeRFRenderer):
             bg_color = self.background(rays_d.reshape(B, N, 3)) # [B, N, 3]
         elif bg_color is None:
             bg_color = 0
-            
+        
         image = image + (1 - weights_sum).unsqueeze(-1) * bg_color # [B, N, 3]
 
         image = image.view(*prefix, 3) # [B, N, 3]
@@ -393,9 +392,9 @@ class MLPDecoder(NeRFRenderer):
 
         mask = (nears < fars).reshape(*prefix) # [B, N]
 
-        sigmas = sigmas.unsqueeze(-1) # [B, N*(T+t), 1]
+        sigmas = sigmas # [B, N*(T+t), 1]
         total_sigma = sigmas.sum(dim=1, keepdim=True) # [B, 1, 1]
-        # print(sigmas.shape, total_sigma.shape, xyzs.shape) # torch.Size([2097152, 1]) torch.Size([1, 1]) torch.Size([16384, 128, 3])
+        # print(sigmas.shape, total_sigma.shape, xyzs.shape) # torch.Size([B, 4096*128, 1]) torch.Size([B, 1, 1]) torch.Size([B, 4096, 128, 3])
         results['origin'] = (xyzs.view(B, -1, 3) * sigmas / total_sigma).sum(dim=-2) # [B, N*(T+t), 3] --> [B, 3]
 
         results['image'] = image # [B, N, 3]
@@ -658,6 +657,12 @@ class TriplaneLearner(MLPDecoder):
             triplanes = torch.tanh(triplanes)
         
         return super().render(triplanes, rays_o, rays_d, staged, max_ray_batch, **kwargs)
+    
+    
+    def export_mesh(self, path, resolution=None, S=128):
+        super().export_mesh(path, resolution, S, 
+            triplane_feat=self.triplane_features.weight.to(self.device).view(-1, 3, self.triplane_dim, self.triplane_size, self.triplane_size)
+        )
     
     
     """

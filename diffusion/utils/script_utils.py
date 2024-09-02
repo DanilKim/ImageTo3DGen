@@ -5,6 +5,89 @@
 INITIAL_LOG_LOSS_SCALE = 20.0
 NUM_CLASSES = 1000
 
+def create_image_model(args):
+    from models.unet import UNetModel
+    if args.channel_mult == "":
+        if args.image_size == 512:
+            args.channel_mult = (0.5, 1, 1, 2, 2, 4, 4)
+        elif args.image_size == 256:
+            args.channel_mult = (1, 1, 2, 2, 4, 4)
+        elif args.image_size == 128:
+            args.channel_mult = (1, 1, 2, 3, 4)
+        elif args.image_size == 64:
+            args.channel_mult = (1, 2, 3, 4)
+        else:
+            raise ValueError(f"unsupported image size: {args.image_size}")
+    else:
+        args.channel_mult = tuple(int(ch_mult) for ch_mult in args.channel_mult.split(","))
+
+    attention_ds = []
+    for res in args.attention_resolutions.split(","):
+        attention_ds.append(args.image_size // int(res))
+    args.out_channels = 2 * args.out_channels if args.learn_sigma else args.out_channels
+        
+    return UNetModel(
+        image_size=args.image_size,
+        in_channels=args.in_channels,
+        out_channels=args.out_channels,
+        latent_dim=args.latent_dim,
+        model_channels=args.model_channels,
+        num_res_blocks=args.num_res_blocks,
+        attention_resolutions=tuple(attention_ds),
+        dropout=args.dropout,
+        channel_mult=args.channel_mult,
+        num_classes=(NUM_CLASSES if args.class_cond else None),
+        use_checkpoint=args.use_checkpoint,
+        use_fp16=args.use_fp16,
+        num_heads=args.num_heads,
+        num_head_channels=args.num_head_channels,
+        num_heads_upsample=args.num_heads_upsample,
+        use_scale_shift_norm=args.use_scale_shift_norm,
+        resblock_updown=args.resblock_updown,
+        use_new_attention_order=args.use_new_attention_order,
+    )
+    
+
+def create_sr_image_model(args):
+    from models.unet import SuperResModel
+    if args.channel_mult == "":
+        if args.image_size == 512:
+            args.channel_mult = (1, 1, 2, 2, 4, 4)
+        elif args.image_size == 256:
+            args.channel_mult = (1, 1, 2, 2, 4, 4)
+        elif args.image_size == 64:
+            args.channel_mult = (1, 2, 3, 4)
+        else:
+            raise ValueError(f"unsupported image size: {args.image_size}")
+    else:
+        args.channel_mult = tuple(int(ch_mult) for ch_mult in args.channel_mult.split(","))
+
+    attention_ds = []
+    for res in args.attention_resolutions.split(","):
+        attention_ds.append(args.image_size // int(res))
+    args.out_channels = 2 * args.out_channels if args.learn_sigma else args.out_channels
+
+    return SuperResModel(
+        image_size=args.image_size,
+        in_channels=args.in_channels,
+        latent_dim=args.latent_dim,
+        model_channels=args.model_channels,
+        out_channels=args.out_channels,
+        num_res_blocks=args.num_res_blocks,
+        attention_resolutions=tuple(attention_ds),
+        dropout=args.dropout,
+        channel_mult=args.channel_mult,
+        num_classes=(NUM_CLASSES if args.class_cond else None),
+        use_checkpoint=args.use_checkpoint,
+        use_fp16=args.use_fp16,
+        num_heads=args.num_heads,
+        num_head_channels=args.num_head_channels,
+        num_heads_upsample=args.num_heads_upsample,
+        use_scale_shift_norm=args.use_scale_shift_norm,
+        resblock_updown=args.resblock_updown,
+        use_new_attention_order=args.use_new_attention_order,
+    )
+
 
 def create_triplane_model(args):
     from models.unet import TriplaneUNetModel
@@ -31,10 +114,7 @@ def create_triplane_model(args):
     args.attention_resolutions = tuple(attention_ds)
     args.threedaware_resolutions = tuple(threedaware_ds)
 
-    args.in_channels = 3 * args.num_channels
-    args.out_channels = (3 * args.num_channels if not args.learn_sigma else 6 * args.num_channels)
-    args.num_classes = (NUM_CLASSES if args.class_cond else None)
-    args.model_channels = args.num_channels
+    args.out_channels = (args.out_channels if not args.learn_sigma else 2 * args.out_channels)
     
     return TriplaneUNetModel(
         threedaware_resolutions=args.threedaware_resolutions,
@@ -48,7 +128,7 @@ def create_triplane_model(args):
         dropout=args.dropout,
         channel_mult=args.channel_mult,
         dims=2,
-        num_classes=args.num_classes,
+        num_classes=(NUM_CLASSES if args.class_cond else None),
         use_checkpoint=args.use_checkpoint,
         use_fp16=args.use_fp16,
         num_heads=args.num_heads,
@@ -91,14 +171,31 @@ def create_gaussian_diffusion(args):
         ),
         loss_type=loss_type,
         rescale_timesteps=args.rescale_timesteps,
-        guidance_strength=args.guidance_strength,
+        guidance_strength=1.0 if args.train else args.guidance_strength,
         #latent_dim=args.latent_dim
     )
 
 
 def create_sr_triplane_model(args):
-    from models.unet import SuperResModel
-    return SuperResModel(args)
+    from models.unet import TriplaneSuperResModel
+    if args.channel_mult == "":
+        if args.image_size == 512:
+            args.channel_mult = (1, 1, 2, 2, 4, 4)
+        elif args.image_size == 256:
+            args.channel_mult = (1, 1, 2, 2, 4, 4)
+        elif args.image_size == 64:
+            args.channel_mult = (1, 2, 3, 4)
+        else:
+            raise ValueError(f"unsupported image size: {args.image_size}")
+    else:
+        args.channel_mult = tuple(int(ch_mult) for ch_mult in args.channel_mult.split(","))
+
+    attention_ds = []
+    for res in args.attention_resolutions.split(","):
+        attention_ds.append(args.image_size // int(res))
+    args.out_channels = 2 * args.out_channels if args.learn_sigma else args.out_channels
+
+    return TriplaneSuperResModel(args)
 
 
 def create_latent_diffusion_model(args):

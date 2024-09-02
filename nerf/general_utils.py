@@ -16,32 +16,32 @@ from PIL import Image
 
 def sample_pdf(bins, weights, n_samples, det=False):
     # This implementation is from NeRF
-    # bins: [B, T], old_z_vals
-    # weights: [B, T - 1], bin weights.
-    # return: [B, n_samples], new_z_vals
+    # bins: [B, N, T], old_z_vals
+    # weights: [B, N, T - 1], bin weights.
+    # return: [B, N, n_samples], new_z_vals
 
     # Get pdf
     weights = weights + 1e-5  # prevent nans
     pdf = weights / torch.sum(weights, -1, keepdim=True)
     cdf = torch.cumsum(pdf, -1)
-    cdf = torch.cat([torch.zeros_like(cdf[..., :1]), cdf], -1)  # [B, T]
+    cdf = torch.cat([torch.zeros_like(cdf[..., :1]), cdf], -1)  # [B, N - 2, T]
     # Take uniform samples
     if det:
         u = torch.linspace(0. + 0.5 / n_samples, 1. - 0.5 / n_samples, steps=n_samples).to(weights.device)
-        u = u.expand(list(cdf.shape[:-1]) + [n_samples])  # [B, n_samples]
+        u = u.expand(list(cdf.shape[:-1]) + [n_samples])  # [B, N - 2, n_samples]
     else:
-        u = torch.rand(list(cdf.shape[:-1]) + [n_samples]).to(weights.device)  # [B, n_samples]
+        u = torch.rand(list(cdf.shape[:-1]) + [n_samples]).to(weights.device)  # [B, N - 2, n_samples]
 
     # Invert CDF
     u = u.contiguous()
-    inds = torch.searchsorted(cdf, u, right=True)  # [B, n_samples]
+    inds = torch.searchsorted(cdf, u, right=True)  # [B, N - 2, n_samples]
     below = torch.max(torch.zeros_like(inds - 1), inds - 1)
     above = torch.min((cdf.shape[-1] - 1) * torch.ones_like(inds), inds)
-    inds_g = torch.stack([below, above], -1)  # (B, n_samples, 2)
+    inds_g = torch.stack([below, above], -1)  # (B, N - 2, n_samples, 2)
 
-    matched_shape = [inds_g.shape[0], inds_g.shape[1], cdf.shape[-1]]
-    cdf_g = torch.gather(cdf.unsqueeze(1).expand(matched_shape), 2, inds_g)
-    bins_g = torch.gather(bins.unsqueeze(1).expand(matched_shape), 2, inds_g)
+    matched_shape = [inds_g.shape[0], inds_g.shape[1], inds_g.shape[2], cdf.shape[-1]]  # [B, N - 2, n_samples, T]
+    cdf_g = torch.gather(cdf.unsqueeze(-2).expand(matched_shape), 2, inds_g)
+    bins_g = torch.gather(bins.unsqueeze(-2).expand(matched_shape), 2, inds_g)
 
     denom = (cdf_g[..., 1] - cdf_g[..., 0])
     denom = torch.where(denom < 1e-5, torch.ones_like(denom), denom)
@@ -138,12 +138,14 @@ def get_rays(poses, intrinsics, H, W, N=-1, error_map=None):
 
     else:
         inds = torch.arange(H*W, device=device).expand([B, H*W])
+        results['inds'] = inds
 
     zs = torch.ones_like(i)
     xs = (i - cx) / fx * zs
     ys = (j - cy) / fy * zs
+
     directions = torch.stack((xs, ys, zs), dim=-1)
-    # directions = safe_normalize(directions)
+    #directions = safe_normalize(directions)
     rays_d = directions @ poses[:, :3, :3].transpose(-1, -2) # (B, N, 3)
 
     rays_o = poses[..., :3, 3] # [B, 3]
